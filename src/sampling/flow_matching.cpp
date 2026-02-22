@@ -27,52 +27,63 @@ Tensor FlowMatchingSampler::sample(const Tensor& x_init,
                                     const DenoiseFn& denoise_fn,
                                     const Schedule& schedule,
                                     BackendPtr backend,
-                                    StreamHandle stream) {
-    // Allocate working buffers — same shape as x_init.
-    Tensor x_t    = backend->alloc(x_init.shape(), x_init.dtype(), stream);
-    Tensor vel    = backend->alloc(x_init.shape(), x_init.dtype(), stream);
-    Tensor x_next = backend->alloc(x_init.shape(), x_init.dtype(), stream);
+                                    StreamHandle stream,
+                                    SamplerBuffers* buffers) {
+    // ── Buffer selection ─────────────────────────────────────────────────
+    // When buffers are provided by InferenceEngine, their addresses are stable
+    // across calls, which is the prerequisite for CUDA Graph capture.
+    // When buffers are nullptr (standalone use), we fall back to local alloc
+    // and disable CUDA Graph.
+    bool use_graph = use_cuda_graph_ && (buffers != nullptr);
 
-    // Initialise x_t = x_init (copy, not alias, so graph capture sees stable ptrs).
+    Tensor x_t, vel;
+    if (buffers) {
+        // Use pre-allocated stable buffers (addresses guaranteed constant).
+        x_t = buffers->x_t;
+        vel = buffers->velocity;
+    } else {
+        x_t = backend->alloc(x_init.shape(), x_init.dtype(), stream);
+        vel = backend->alloc(x_init.shape(), x_init.dtype(), stream);
+    }
+
+    // Copy initial noise into x_t. This copy is intentionally OUTSIDE the
+    // CUDA Graph — the graph only captures the denoising loop body.
     backend->copy(x_t, x_init, stream);
 
-    auto timesteps = schedule.linspace();  // [t_start, ..., t_end], length = N+1
+    auto timesteps = schedule.linspace();  // length = num_steps + 1
 
-    // ── Optionally capture the denoising loop into a CUDA Graph ───────────
-    // Graph capture: the first call runs the loop "live" while CUDA records
-    // all kernel launches; subsequent calls replay the graph instantly,
-    // eliminating CPU overhead from the N-step loop (~microseconds per step
-    // saved, adds up at 50 Hz with N=10 steps).
+    // ── CUDA Graph path ───────────────────────────────────────────────────
+    // First call: begin capture, run loop live (CUDA records all kernels).
+    // Subsequent calls: replay the graph (zero CPU launch overhead per step).
     //
-    // Requirements for graph capture:
-    //   1. All tensor addresses must be stable (pre-allocated by InferenceEngine).
-    //   2. No host-side branches inside the loop that depend on device data.
-    //   3. denoise_fn must not synchronize the stream.
-    //
-    if (use_cuda_graph_ && !graph_captured_) {
+    // Correctness requirements (must be maintained by the caller):
+    //   1. x_t, vel addresses are identical across calls (provided by buffers).
+    //   2. denoise_fn issues only device-side work; no stream syncs inside.
+    //   3. schedule.num_steps is constant (changing it requires re-capture).
+    if (use_graph && !graph_captured_) {
         backend->graph_begin_capture(stream);
     }
 
-    for (int step = 0; step < schedule.num_steps; ++step) {
-        float t     = timesteps[step];
-        float t_next = timesteps[step + 1];
-        float dt    = t_next - t;  // negative (going from noise to data)
+    if (!use_graph || !graph_captured_) {
+        // Live execution (first call or no-graph path).
+        for (int step = 0; step < schedule.num_steps; ++step) {
+            float t      = timesteps[step];
+            float t_next = timesteps[step + 1];
+            float dt     = t_next - t;  // negative: noise → data
 
-        // Predict velocity: vel = v_θ(x_t, t, condition)
-        denoise_fn(x_t, t, condition, vel, stream);
+            denoise_fn(x_t, t, condition, vel, stream);
 
-        // Euler update: x_next = x_t + dt * vel
-        // Implemented as: x_next = x_t + scale(vel, dt)
-        backend->scale(vel, dt, x_next, stream);
-        backend->add(x_t, x_next, x_t, stream);
-    }
+            // x_t = x_t + dt * vel  (in-place, no extra alloc)
+            backend->scale(vel, dt, vel, stream);
+            backend->add(x_t, vel, x_t, stream);
+        }
 
-    if (use_cuda_graph_ && !graph_captured_) {
-        backend->graph_end_capture(stream);
-        graph_captured_ = true;
-    } else if (use_cuda_graph_ && graph_captured_) {
-        // Replay: reset x_t from x_init first (done before capture replay).
-        backend->copy(x_t, x_init, stream);
+        if (use_graph) {
+            backend->graph_end_capture(stream);
+            graph_captured_ = true;
+        }
+    } else {
+        // Graph replay: all kernel launches happen in a single driver call.
         backend->graph_launch(stream);
     }
 
@@ -87,7 +98,8 @@ Tensor DDIMSampler::sample(const Tensor& x_init,
                             const DenoiseFn& denoise_fn,
                             const Schedule& schedule,
                             BackendPtr backend,
-                            StreamHandle stream) {
+                            StreamHandle stream,
+                            SamplerBuffers* /*buffers*/) {
     Tensor x_t  = backend->alloc(x_init.shape(), x_init.dtype(), stream);
     Tensor eps  = backend->alloc(x_init.shape(), x_init.dtype(), stream);
     Tensor tmp  = backend->alloc(x_init.shape(), x_init.dtype(), stream);

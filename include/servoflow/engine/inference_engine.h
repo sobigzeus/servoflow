@@ -125,10 +125,17 @@ public:
     void load_weights(const std::string& path);
 
     // Run one full inference cycle. Thread-safe via internal mutex.
+    // input.frame_id: if non-zero, used to detect new camera frames for
+    // condition cache invalidation. Set to 0 to rely on mark_new_frame().
     VLAOutput infer(const VLAInput& input);
 
     // Invalidate the condition cache (force re-encode on next call).
     void invalidate_condition_cache();
+
+    // Call this each time the camera produces a new frame before infer().
+    // The engine will re-encode condition on the next infer() call.
+    // frame_id must be monotonically increasing; wrapping is fine.
+    void mark_new_frame(uint64_t frame_id);
 
     // Release cached GPU memory.
     void empty_cache();
@@ -139,9 +146,6 @@ public:
 private:
     // Pre-allocate all working tensors. Called once at construction.
     void preallocate_buffers();
-
-    // Returns true if the new images are different from cached ones.
-    bool images_changed(const std::vector<Tensor>& images);
 
     std::shared_ptr<IVLAModel> model_;
     std::shared_ptr<ISampler>  sampler_;
@@ -154,9 +158,17 @@ private:
     Tensor buf_velocity_;     // [1, T_action, action_dim]  — predicted velocity
     Tensor buf_action_out_;   // [1, T_action, action_dim]  — final action (pinned)
 
+    // Sampler working buffers (passed to sampler to guarantee stable addresses).
+    SamplerBuffers sampler_bufs_;
+
     // Condition cache state.
-    bool    condition_valid_  = false;
-    size_t  condition_hash_   = 0;
+    // condition_valid_: false forces re-encode on next call.
+    // condition_frame_id_: monotonically increasing counter set by the caller
+    //   via mark_new_frame(). The engine re-encodes when frame_id changes.
+    //   This is more reliable than pointer-based hashing because camera drivers
+    //   typically reuse the same pinned buffer for every frame.
+    bool     condition_valid_   = false;
+    uint64_t condition_frame_id_ = UINT64_MAX;
 
     // CUDA streams and event for async overlap.
     StreamHandle stream_encode_  = nullptr;
@@ -164,6 +176,9 @@ private:
     void*        encode_done_event_ = nullptr;   // cudaEvent_t
 
     std::mutex infer_mu_;
+
+    // current frame id seen by the engine (updated by mark_new_frame)
+    uint64_t current_frame_id_ = 0;
 };
 
 }  // namespace sf

@@ -45,7 +45,8 @@ public:
                           const DenoiseFn& denoise_fn,
                           const Schedule& schedule,
                           BackendPtr backend,
-                          StreamHandle stream) = 0;
+                          StreamHandle stream,
+                          SamplerBuffers* buffers = nullptr) = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,25 +54,36 @@ public:
 //
 // Used by RDT-1B (and π0). The ODE is:
 //   dx/dt = v_θ(x_t, t)
-// Euler update: x_{t-Δt} = x_t - Δt * v_θ(x_t, t)
+// Euler update: x_{t-Δt} = x_t + dt * v_θ(x_t, t)
 //
-// Supports an optional CUDA Graph capture of the inner loop for maximum
-// throughput when the sequence length and action dim are fixed.
+// CUDA Graph requirement: all working buffers (x_t, velocity) must have
+// stable addresses across calls. The caller (InferenceEngine) must pre-
+// allocate these buffers and pass them via SamplerBuffers. The sampler
+// never allocates inside sample() when buffers are provided.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Pre-allocated working buffers owned by InferenceEngine.
+// Passed into sample() to guarantee stable addresses for CUDA Graph capture.
+struct SamplerBuffers {
+    Tensor x_t;       // [B, T_action, action_dim] — noisy action (in/out)
+    Tensor velocity;  // [B, T_action, action_dim] — predicted velocity (scratch)
+};
+
 class FlowMatchingSampler : public ISampler {
 public:
-    // If use_cuda_graph=true the sampler captures the denoising loop into a
-    // CUDA Graph on first call and replays it on subsequent calls.
-    // IMPORTANT: CUDA Graph capture requires that tensor addresses are stable
-    // across calls — the InferenceEngine must guarantee this.
+    // use_cuda_graph: capture the denoising loop on first call, replay thereafter.
     explicit FlowMatchingSampler(bool use_cuda_graph = true);
 
+    // buffers: pre-allocated by InferenceEngine; must remain valid for the
+    // lifetime of the sampler. If nullptr, buffers are allocated internally
+    // (disables CUDA Graph support).
     Tensor sample(const Tensor& x_init,
                   const Tensor& condition,
                   const DenoiseFn& denoise_fn,
                   const Schedule& schedule,
                   BackendPtr backend,
-                  StreamHandle stream) override;
+                  StreamHandle stream,
+                  SamplerBuffers* buffers = nullptr) override;
 
 private:
     bool use_cuda_graph_ = true;
@@ -88,7 +100,8 @@ public:
                   const DenoiseFn& denoise_fn,
                   const Schedule& schedule,
                   BackendPtr backend,
-                  StreamHandle stream) override;
+                  StreamHandle stream,
+                  SamplerBuffers* buffers = nullptr) override;
 };
 
 }  // namespace sf

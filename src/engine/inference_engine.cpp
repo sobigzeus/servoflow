@@ -51,22 +51,28 @@ InferenceEngine::~InferenceEngine() {
 }
 
 void InferenceEngine::preallocate_buffers() {
-    DType dt = config_.compute_dtype;
+    DType dt  = config_.compute_dtype;
     int64_t T = model_->action_horizon();
     int64_t A = model_->action_dim();
 
-    // action buffers — shapes are static, so addresses remain stable.
+    // All action-space buffers are pre-allocated with stable addresses.
+    // Addresses must not change between CUDA Graph capture and replay.
     buf_x_t_      = backend_->alloc(Shape({1, T, A}), dt);
     buf_velocity_ = backend_->alloc(Shape({1, T, A}), dt);
 
-    // Output buffer in pinned host memory for fast D2H.
+    // Wire sampler buffers to the same pre-allocated tensors.
+    // This is what enables CUDA Graph capture in FlowMatchingSampler.
+    sampler_bufs_.x_t      = buf_x_t_;
+    sampler_bufs_.velocity = buf_velocity_;
+
+    // Output in pinned host memory for fast D2H.
     if (config_.pinned_output) {
         buf_action_out_ = backend_->alloc_pinned(Shape({1, T, A}), DType::Float32);
     } else {
         buf_action_out_ = backend_->alloc(Shape({1, T, A}), DType::Float32);
     }
 
-    // condition buffer will be allocated on first encode (size depends on model).
+    // condition buffer allocated on first encode (size depends on model config).
 }
 
 void InferenceEngine::load_weights(const std::string& path) {
@@ -81,22 +87,13 @@ void InferenceEngine::invalidate_condition_cache() {
     condition_valid_ = false;
 }
 
-void InferenceEngine::empty_cache() {
-    backend_->empty_cache();
+void InferenceEngine::mark_new_frame(uint64_t frame_id) {
+    std::lock_guard<std::mutex> lk(infer_mu_);
+    current_frame_id_ = frame_id;
 }
 
-bool InferenceEngine::images_changed(const std::vector<Tensor>& images) {
-    // Lightweight fingerprint: XOR of data pointer values.
-    // In production this can be replaced with a perceptual hash or
-    // a timestamp from the camera driver.
-    size_t h = 0;
-    for (auto& img : images)
-        h ^= reinterpret_cast<size_t>(img.raw_data_ptr()) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    if (h != condition_hash_) {
-        condition_hash_ = h;
-        return true;
-    }
-    return false;
+void InferenceEngine::empty_cache() {
+    backend_->empty_cache();
 }
 
 VLAOutput InferenceEngine::infer(const VLAInput& input) {
@@ -105,9 +102,13 @@ VLAOutput InferenceEngine::infer(const VLAInput& input) {
     auto t0 = std::chrono::steady_clock::now();
 
     // ── 1. Condition encoding (on stream_encode_) ─────────────────────────
+    // Cache invalidation uses a monotonic frame_id supplied by the caller via
+    // mark_new_frame(). This is reliable even when the camera driver reuses
+    // the same pinned buffer (same pointer, new content) — a case where
+    // pointer-based hashing would silently use stale condition embeddings.
     bool need_encode = !condition_valid_
                     || !config_.cache_condition
-                    || images_changed(input.images);
+                    || (current_frame_id_ != condition_frame_id_);
 
     if (need_encode) {
         Tensor new_cond = model_->encode_condition(input, backend_, stream_encode_);
@@ -120,7 +121,8 @@ VLAOutput InferenceEngine::infer(const VLAInput& input) {
                                              stream_encode_);
         }
         backend_->copy(buf_condition_, new_cond, stream_encode_);
-        condition_valid_ = true;
+        condition_valid_    = true;
+        condition_frame_id_ = current_frame_id_;
 
         // Signal stream_denoise_ to wait until encoding is done.
         SF_CUDA_EVENT_RECORD(encode_done_event_, stream_encode_);
@@ -145,7 +147,8 @@ VLAOutput InferenceEngine::infer(const VLAInput& input) {
     sched.num_steps = config_.num_denoise_steps;
 
     Tensor raw_action = sampler_->sample(
-        buf_x_t_, buf_condition_, denoise_fn, sched, backend_, stream_denoise_);
+        buf_x_t_, buf_condition_, denoise_fn, sched,
+        backend_, stream_denoise_, &sampler_bufs_);
 
     // ── 4. Decode action + D2H copy ──────────────────────────────────────
     Tensor decoded = model_->decode_action(raw_action, backend_, stream_denoise_);
