@@ -89,6 +89,10 @@ set(SF_CORE_SOURCES
     src/backend/backend.cpp
     src/sampling/flow_matching.cpp
     src/engine/inference_engine.cpp
+    src/loader/safetensors.cpp
+    src/models/rdt1b/config.cpp
+    src/models/rdt1b/dit_block.cpp
+    src/models/rdt1b/rdt1b.cpp
 )
 
 set(SF_CUDA_SOURCES
