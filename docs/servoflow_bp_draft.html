@@ -1,0 +1,1531 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>ServoFlow - 面向具身智能的全栈实时VLA推理解决方案</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com"/>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""/>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;1,400&amp;family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+
+    <style>
+        :root {
+            --color-primary: #1e293b;
+            --color-secondary: #475569;
+            --color-accent: #dc2626;
+            --color-muted: #64748b;
+            --color-background: #f8fafc;
+            --color-surface: #ffffff;
+            --font-serif: 'Crimson Text', serif;
+            --font-sans: 'Inter', sans-serif;
+        }
+        
+        body {
+            font-family: var(--font-sans);
+            color: var(--color-primary);
+            background-color: var(--color-background);
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+        
+        .serif {
+            font-family: var(--font-serif);
+        }
+        
+        .toc-fixed {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 280px;
+            height: 100vh;
+            background: var(--color-surface);
+            border-right: 1px solid #e2e8f0;
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 2rem 1.5rem;
+            box-shadow: 2px 0 8px rgba(0,0,0,0.05);
+        }
+        
+        .main-content {
+            margin-left: 280px;
+            min-height: 100vh;
+        }
+        
+        .hero-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            align-items: center;
+            min-height: 70vh;
+        }
+        
+        .hero-text {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        
+        .hero-visual {
+            position: relative;
+            overflow: hidden;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #1e293b 0%, #475569 100%);
+        }
+        
+        .hero-visual img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.9;
+        }
+        
+        .section-divider {
+            height: 1px;
+            background: linear-gradient(to right, transparent, #e2e8f0, transparent);
+            margin: 4rem 0;
+        }
+        
+        .chart-container {
+            background: var(--color-surface);
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin: 2rem 0;
+        }
+        
+        .citation {
+            color: var(--color-accent);
+            text-decoration: none;
+            font-weight: 500;
+            border-bottom: 1px dotted var(--color-accent);
+        }
+        
+        .citation:hover {
+            opacity: 0.8;
+        }
+        
+        .performance-highlight {
+            background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+            border-left: 4px solid var(--color-accent);
+            padding: 1.5rem;
+            margin: 2rem 0;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .layer-card {
+            background: var(--color-surface);
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            border: 1px solid #e2e8f0;
+            transition: all 0.3s ease;
+        }
+        
+        .layer-card:hover {
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            transform: translateY(-2px);
+        }
+        
+        .toc-link {
+            display: block;
+            padding: 0.5rem 0;
+            color: var(--color-secondary);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: all 0.2s ease;
+        }
+        
+        .toc-link:hover,
+        .toc-link.active {
+            color: var(--color-accent);
+            border-bottom-color: var(--color-accent);
+        }
+        
+        .toc-link.sub {
+            padding-left: 1rem;
+            font-size: 0.9rem;
+            color: var(--color-muted);
+        }
+        
+        @media (max-width: 1024px) {
+            .toc-fixed {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+            }
+            
+            .toc-fixed.open {
+                transform: translateX(0);
+            }
+            
+            .main-content {
+                margin-left: 0;
+            }
+            
+            .hero-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .hero-text h1 {
+                font-size: 2.5rem;
+                line-height: 1.2;
+            }
+            .hero-text .text-4xl {
+                font-size: 1.5rem;
+            }
+            .hero-text p.text-xl {
+                font-size: 1rem;
+            }
+            .hero-visual {
+                height: auto;
+                min-height: 200px;
+            }
+            section {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+            .performance-highlight,
+            .layer-card,
+            .chart-container {
+                padding: 1rem;
+            }
+        }
+    </style>
+  <base target="_blank">
+</head>
+
+  <body>
+    <!-- Fixed Table of Contents -->
+    <nav class="toc-fixed">
+      <div class="mb-6">
+        <h3 class="text-lg font-bold text-gray-900 mb-4">目录导航</h3>
+      </div>
+
+      <div class="space-y-1">
+        <a href="#hero" class="toc-link">项目概览</a>
+        <a href="#executive-summary" class="toc-link">执行摘要</a>
+        <a href="#pain-points" class="toc-link">行业痛点</a>
+        <a href="#solution" class="toc-link">解决方案</a>
+        <a href="#market-analysis" class="toc-link">市场分析</a>
+        <a href="#competitive-landscape" class="toc-link">竞争格局</a>
+        <a href="#business-model" class="toc-link">商业模式</a>
+        <a href="#roadmap" class="toc-link">产品路线图</a>
+        <a href="#team" class="toc-link">团队介绍</a>
+        <a href="#financial-plan" class="toc-link">财务规划</a>
+        <a href="#risk-assessment" class="toc-link">风险评估</a>
+        <a href="#government-support" class="toc-link">政府资助适配</a>
+      </div>
+
+      <div class="mt-8 pt-6 border-t border-gray-200">
+        <div class="text-sm text-gray-500 space-y-2">
+          <div><i class="fas fa-calendar-alt mr-2"></i>2026年2月</div>
+          <div><i class="fas fa-tag mr-2"></i>v1.0</div>
+          <div><i class="fas fa-shield-alt mr-2"></i>机密文件</div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Hero Section -->
+      <section id="hero" class="min-h-screen bg-gradient-to-br from-slate-50 to-gray-100">
+        <div class="container mx-auto px-8 py-16">
+          <div class="hero-grid">
+            <div class="hero-text">
+              <div class="mb-6">
+                <span class="inline-block px-4 py-2 bg-red-100 text-red-800 rounded-full text-sm font-medium">
+                  <i class="fas fa-rocket mr-2"></i>具身智能基础设施
+                </span>
+              </div>
+
+              <h1 class="serif text-5xl font-bold text-gray-900 mb-6 leading-tight">
+                <em class="text-red-600">ServoFlow</em>
+                <br/>
+                面向具身智能的
+                <br/>
+                全栈实时VLA推理解决方案
+              </h1>
+
+              <p class="text-xl text-gray-600 mb-8 leading-relaxed">
+                解决机器人VLA模型100-300ms延迟瓶颈，实现≤20ms实时控制目标
+                <br/>
+                <span class="font-semibold text-gray-900">性能提升5-15倍，定义具身智能时代的推理基础设施标准</span>
+              </p>
+
+              <div class="flex flex-wrap gap-4">
+                <div class="flex items-center space-x-2 text-gray-700">
+                  <i class="fas fa-microchip text-red-500"></i>
+                  <span>C++/CUDA全栈优化</span>
+                </div>
+                <div class="flex items-center space-x-2 text-gray-700">
+                  <i class="fas fa-robot text-red-500"></i>
+                  <span>开源框架+闭源模型</span>
+                </div>
+                <div class="flex items-center space-x-2 text-gray-700">
+                  <i class="fas fa-cogs text-red-500"></i>
+                  <span>专用硬件模组</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="hero-visual">
+              <img src="https://kimi-web-img.moonshot.cn/img/oss.guyuehome.com/705a92c39f89ac09e4bb1cf52ed7e3190f5640c6.png" alt="人形机器人神经网络结构示意图" size="large" aspect="wide" query="人形机器人神经网络结构" referrerpolicy="no-referrer" data-modified="1" data-score="0.00"/>
+              <div class="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent"></div>
+              <div class="absolute bottom-6 left-6 text-white">
+                <div class="text-sm font-medium">实时VLA推理架构</div>
+                <div class="text-xs opacity-80">C++/CUDA全栈优化</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Key Highlights Grid -->
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-16">
+            <div class="bg-white rounded-lg p-6 shadow-lg border border-gray-200">
+              <div class="text-3xl font-bold text-red-600 mb-2">5-15倍</div>
+              <div class="text-gray-600 font-medium">性能提升预期</div>
+              <div class="text-sm text-gray-500 mt-2">vs Python基准框架</div>
+            </div>
+
+            <div class="bg-white rounded-lg p-6 shadow-lg border border-gray-200">
+              <div class="text-3xl font-bold text-red-600 mb-2">6.25万台</div>
+              <div class="text-gray-600 font-medium">2026年人形机器人出货量</div>
+              <div class="text-sm text-gray-500 mt-2">IDC预测数据</div>
+            </div>
+
+            <div class="bg-white rounded-lg p-6 shadow-lg border border-gray-200">
+              <div class="text-3xl font-bold text-red-600 mb-2">4亿美元</div>
+              <div class="text-gray-600 font-medium">可获取市场规模</div>
+              <div class="text-sm text-gray-500 mt-2">专注VLA推理解决方案</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Executive Summary -->
+      <section id="executive-summary" class="container mx-auto px-8 py-16">
+        <div class="max-w-4xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">执行摘要</h2>
+
+          <div class="prose prose-lg max-w-none">
+            <div class="performance-highlight">
+              <h3 class="text-xl font-bold text-gray-900 mb-4">
+                <i class="fas fa-bolt text-red-500 mr-3"></i>
+                核心命题：VLA模型实时推理瓶颈的系统性解决方案
+              </h3>
+              <p class="text-gray-700 mb-4">
+                具身智能正站在产业爆发的临界点。根据<a href="https://news.qq.com/rain/a/20260122A04L0Q00" class="citation">IDC 2026年1月发布的市场洞察报告</a>，<strong>2026年被业界普遍认定为具身智能的&#34;商用元年&#34;</strong>，全球人形机器人已开始使用Vision-Language-Action（VLA）模型作为核心控制架构。
+              </p>
+              <p class="text-gray-700">
+                然而，制约这一革命性技术从实验室走向工厂和家庭的根本瓶颈，并非模型能力的不足，而是<strong>VLA模型的实时推理性能</strong>——当前主流VLA模型的推理延迟普遍处于<strong>100-300毫秒</strong>区间，这与机器人实时控制所要求的<strong>≤20毫秒（50Hz）</strong>存在<strong>5至15倍</strong>的性能鸿沟。
+              </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 my-12">
+              <div class="layer-card">
+                <h4 class="text-lg font-bold text-gray-900 mb-4">
+                  <i class="fas fa-layer-group text-blue-500 mr-2"></i>
+                  三层产品架构
+                </h4>
+                <div class="space-y-3">
+                  <div class="flex items-start space-x-3">
+                    <div class="w-2 h-2 bg-blue-500 rounded-full mt-2"></div>
+                    <div>
+                      <div class="font-medium">开源推理框架</div>
+                      <div class="text-sm text-gray-600">C++/CUDA引擎，建立技术信用</div>
+                    </div>
+                  </div>
+                  <div class="flex items-start space-x-3">
+                    <div class="w-2 h-2 bg-green-500 rounded-full mt-2"></div>
+                    <div>
+                      <div class="font-medium">闭源优化模型</div>
+                      <div class="text-sm text-gray-600">蒸馏量化剪枝，核心商业壁垒</div>
+                    </div>
+                  </div>
+                  <div class="flex items-start space-x-3">
+                    <div class="w-2 h-2 bg-red-500 rounded-full mt-2"></div>
+                    <div>
+                      <div class="font-medium">专用硬件模组</div>
+                      <div class="text-sm text-gray-600">边缘推理设备，终极产品形态</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="layer-card">
+                <h4 class="text-lg font-bold text-gray-900 mb-4">
+                  <i class="fas fa-target text-red-500 mr-2"></i>
+                  战略目标
+                </h4>
+                <div class="space-y-3">
+                  <div class="flex items-center space-x-2">
+                    <i class="fas fa-check-circle text-green-500"></i>
+                    <span class="text-gray-700">成为具身智能时代的推理基础设施标准</span>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <i class="fas fa-check-circle text-green-500"></i>
+                    <span class="text-gray-700">类比TensorRT之于视觉推理的地位</span>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <i class="fas fa-check-circle text-green-500"></i>
+                    <span class="text-gray-700">定义机器人实时VLA推理的行业规范</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Pain Points -->
+      <section id="pain-points" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">行业痛点与技术验证</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-12">
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">VLA推理延迟的量化瓶颈</h3>
+
+              <div class="chart-container">
+                <h4 class="text-lg font-semibold mb-4">推理延迟构成分析</h4>
+                <div class="space-y-4">
+                  <div class="flex justify-between items-center p-3 bg-red-50 rounded">
+                    <span class="font-medium">目标要求</span>
+                    <span class="text-red-600 font-bold">≤20ms (50Hz)</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-yellow-50 rounded">
+                    <span class="font-medium">当前现状</span>
+                    <span class="text-yellow-600 font-bold">100-300ms</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-blue-50 rounded">
+                    <span class="font-medium">性能差距</span>
+                    <span class="text-blue-600 font-bold">5-15倍</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-8">
+                <h4 class="text-lg font-semibold mb-4">关键数据验证</h4>
+                <div class="bg-blue-50 border-l-4 border-blue-500 p-4 rounded">
+                  <p class="text-sm text-gray-700">
+                    <strong>智元机器人突破：</strong>针对π0.5 VLA模型，在Jetson Thor平台上实现推理帧率从1.4Hz到22.1Hz的跃升，
+                    <a href="https://www.zhiyuan-robot.com/article/315/detail/134.html" class="citation">性能提升超过15倍</a>。
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">现有方案失效根因</h3>
+
+              <div class="space-y-6">
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-gray-900 mb-3">
+                    <i class="fas fa-exclamation-triangle text-yellow-500 mr-2"></i>
+                    研究级框架限制
+                  </h4>
+                  <ul class="text-sm text-gray-600 space-y-2">
+                    <li>• Python GIL全局解释器锁的并行瓶颈</li>
+                    <li>• 动态内存管理导致的碎片化问题</li>
+                    <li>• 缺乏VLA特有计算模式的算子融合</li>
+                    <li>• CPU-GPU同步调度开销累积</li>
+                  </ul>
+                </div>
+
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-gray-900 mb-3">
+                    <i class="fas fa-tools text-blue-500 mr-2"></i>
+                    通用引擎局限
+                  </h4>
+                  <ul class="text-sm text-gray-600 space-y-2">
+                    <li>• 不理解DiT扩散循环语义</li>
+                    <li>• 缺乏多模态条件融合优化</li>
+                    <li>• 无动作解码实时性约束感知</li>
+                    <li>• 端到端加速效果有限</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Solution -->
+      <section id="solution" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">解决方案</h2>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+            <div class="layer-card">
+              <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i class="fas fa-code text-2xl text-blue-600"></i>
+                </div>
+                <h3 class="text-xl font-bold text-gray-900">开源推理框架</h3>
+                <div class="text-sm text-blue-600 font-medium">ServoFlow Core</div>
+              </div>
+              <div class="space-y-3 text-sm text-gray-600">
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>C++/CUDA全栈引擎</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>FlashAttention v2集成</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>CUDA Graph加速</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>条件缓存机制</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="layer-card">
+              <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i class="fas fa-brain text-2xl text-green-600"></i>
+                </div>
+                <h3 class="text-xl font-bold text-gray-900">闭源优化模型</h3>
+                <div class="text-sm text-green-600 font-medium">性能优化层</div>
+              </div>
+              <div class="space-y-3 text-sm text-gray-600">
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>一致性蒸馏（50步→2-4步）</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>INT8/INT4量化</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>结构剪枝优化</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>任务专项微调</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="layer-card">
+              <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i class="fas fa-server text-2xl text-red-600"></i>
+                </div>
+                <h3 class="text-xl font-bold text-gray-900">专用硬件模组</h3>
+                <div class="text-sm text-red-600 font-medium">终极产品形态</div>
+              </div>
+              <div class="space-y-3 text-sm text-gray-600">
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>Jetson/昇腾/ROCm适配</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>开箱即用50Hz目标</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>年度维保升级</span>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <i class="fas fa-check text-green-500"></i>
+                  <span>ROS 2接口兼容</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-container">
+            <h3 class="text-xl font-bold text-gray-900 mb-6">性能提升路径</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div>
+                <h4 class="font-semibold mb-4">第一阶段目标（5-8倍提升）</h4>
+                <div class="space-y-3">
+                  <div class="flex justify-between items-center p-3 bg-blue-50 rounded">
+                    <span>C++运行时+算子融合</span>
+                    <span class="font-bold text-blue-600">1.5-2×</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-green-50 rounded">
+                    <span>FlashAttention+FP16</span>
+                    <span class="font-bold text-green-600">1.5-2×</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-yellow-50 rounded">
+                    <span>CUDA Graph加速</span>
+                    <span class="font-bold text-yellow-600">1.2-1.5×</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-red-50 rounded">
+                    <span>条件缓存（稳态）</span>
+                    <span class="font-bold text-red-600">3-5×</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <h4 class="font-semibold mb-4">第二阶段目标（10-20倍提升）</h4>
+                <div class="space-y-3">
+                  <div class="flex justify-between items-center p-3 bg-purple-50 rounded">
+                    <span>模型蒸馏优化</span>
+                    <span class="font-bold text-purple-600">2-3×</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-indigo-50 rounded">
+                    <span>INT8量化加速</span>
+                    <span class="font-bold text-indigo-600">2-4×</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <span>综合性能提升</span>
+                    <span class="font-bold text-gray-600">10-20×</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Market Analysis -->
+      <section id="market-analysis" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">市场分析</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12">
+            <div class="chart-container">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">TAM（全域可达）</h3>
+              <div class="text-center">
+                <div class="text-4xl font-bold text-blue-600 mb-2">~130亿美元</div>
+                <div class="text-sm text-gray-600">2026年全球具身智能市场</div>
+                <div class="mt-4 text-xs text-gray-500">
+                  数据来源：<a href="https://www.marketresearch.com/OG-Analysis-v3922/Embodied-AI-Outlook-Share-Growth-43707556/" class="citation">MarketResearch.com</a>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-container">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">SAM（可服务市场）</h3>
+              <div class="text-center">
+                <div class="text-4xl font-bold text-green-600 mb-2">~39亿美元</div>
+                <div class="text-sm text-gray-600">需AI推理能力的智能机器人</div>
+                <div class="mt-4 text-xs text-gray-500">
+                  约占TAM的30%
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-container">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">SOM（可获取市场）</h3>
+              <div class="text-center">
+                <div class="text-4xl font-bold text-red-600 mb-2">~4亿美元</div>
+                <div class="text-sm text-gray-600">专注VLA实时推理解决方案</div>
+                <div class="mt-4 text-xs text-gray-500">
+                  约占SAM的10%
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">中国市场核心数据</h3>
+
+              <div class="chart-container">
+                <h4 class="text-lg font-semibold mb-4">中国人形机器人市场预测</h4>
+                <div class="space-y-4">
+                  <div class="flex justify-between items-center p-3 bg-blue-50 rounded">
+                    <span>2025年</span>
+                    <span class="font-bold">0.5万台</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-red-50 rounded">
+                    <span>2026年（关键拐点）</span>
+                    <span class="font-bold text-red-600">6.25万台</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-green-50 rounded">
+                    <span>2027年</span>
+                    <span class="font-bold">15万台</span>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-purple-50 rounded">
+                    <span>2028年</span>
+                    <span class="font-bold">30万台</span>
+                  </div>
+                </div>
+                <div class="mt-4 text-xs text-gray-500">
+                  数据来源：<a href="https://news.qq.com/rain/a/20260122A04L0Q00" class="citation">IDC报告</a>
+                </div>
+              </div>
+
+              <div class="mt-8 bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
+                <p class="text-sm text-gray-700">
+                  <strong>关键洞察：</strong>2026年的6.25万台出货量是关键拐点，这一规模足以支撑供应链成熟、成本下探和应用验证的正向循环。
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">政策与资本驱动</h3>
+
+              <div class="space-y-6">
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-gray-900 mb-4">
+                    <i class="fas fa-flag text-red-500 mr-2"></i>
+                    国家战略支持
+                  </h4>
+                  <div class="space-y-3 text-sm text-gray-600">
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500"></i>
+                      <span>具身智能列入AI重大专项</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500"></i>
+                      <span>北京/上海/深圳专项资金</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500"></i>
+                      <span>科技型中小企业认定</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-gray-900 mb-4">
+                    <i class="fas fa-chart-line text-blue-500 mr-2"></i>
+                    资本市场热度
+                  </h4>
+                  <div class="space-y-3">
+                    <div class="flex justify-between items-center">
+                      <span class="text-sm">2025年行业融资</span>
+                      <span class="font-bold text-blue-600">&gt;329亿元</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                      <span class="text-sm">国家AI产业基金</span>
+                      <span class="font-bold text-green-600">&gt;1000亿元</span>
+                    </div>
+                    <div class="text-xs text-gray-500 mt-2">
+                      数据来源：<a href="https://eu.36kr.com/zh/p/3660312420180864" class="citation">36氪研究院</a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Competitive Landscape -->
+      <section id="competitive-landscape" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">竞争格局与差异化定位</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">国际竞争对手动态</h3>
+
+              <div class="space-y-6">
+                <div class="border-l-4 border-blue-500 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">NVIDIA</h4>
+                  <p class="text-sm text-gray-600 mb-3">
+                    CES 2026发布Alpamayo VLA模型，GR00T N1.6成训练标准，Jetson Thor平台强势推进。
+                  </p>
+                  <div class="flex space-x-4 text-xs">
+                    <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded">模型层合作</span>
+                    <span class="bg-green-100 text-green-800 px-2 py-1 rounded">硬件层互补</span>
+                  </div>
+                </div>
+
+                <div class="border-l-4 border-gray-400 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">其他框架</h4>
+                  <p class="text-sm text-gray-600 mb-3">
+                    vLLM/SGLang专注LLM推理，TensorRT通用优化但不理解VLA语义。
+                  </p>
+                  <div class="flex space-x-4 text-xs">
+                    <span class="bg-gray-100 text-gray-800 px-2 py-1 rounded">赛道不同</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">国内竞争态势</h3>
+
+              <div class="space-y-6">
+                <div class="border-l-4 border-green-500 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">智元机器人</h4>
+                  <p class="text-sm text-gray-600 mb-3">
+                    π0.5端侧推理实现15倍提升（1.4Hz→22.1Hz），验证需求真实性，但方案厂商锁定。
+                  </p>
+                  <div class="flex space-x-4 text-xs">
+                    <a href="https://www.zhiyuan-robot.com/article/315/detail/134.html" class="citation">官方数据</a>
+                  </div>
+                </div>
+
+                <div class="border-l-4 border-orange-500 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">市场空白</h4>
+                  <p class="text-sm text-gray-600 mb-3">
+                    无第三方通用VLA推理框架供应商，ServoFlow占据先发优势窗口。
+                  </p>
+                  <div class="flex space-x-4 text-xs">
+                    <span class="bg-orange-100 text-orange-800 px-2 py-1 rounded">先发优势</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-container">
+            <h3 class="text-xl font-bold text-gray-900 mb-6">ServoFlow差异化壁垒</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div class="text-center">
+                <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i class="fas fa-cogs text-2xl text-blue-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">技术纵深</h4>
+                <p class="text-sm text-gray-600">
+                  C++/CUDA全栈+DiT专用优化，系统性超越单点突破方案
+                </p>
+              </div>
+
+              <div class="text-center">
+                <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i class="fas fa-users text-2xl text-green-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">生态位</h4>
+                <p class="text-sm text-gray-600">
+                  开源框架建立开发者社区，降低客户切换成本
+                </p>
+              </div>
+
+              <div class="text-center">
+                <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <i class="fas fa-server text-2xl text-red-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">商业模式</h4>
+                <p class="text-sm text-gray-600">
+                  跨平台适配（Jetson/昇腾/ROCm），避免厂商锁定
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Business Model -->
+      <section id="business-model" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">商业模式与财务预测</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12">
+            <div class="chart-container">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">近期（0-12月）</h3>
+              <div class="text-center">
+                <div class="text-3xl font-bold text-blue-600 mb-2">100-300万</div>
+                <div class="text-sm text-gray-600">技术服务+政府资助</div>
+                <div class="mt-4 space-y-2 text-xs text-gray-500">
+                  <div>技术服务：50-200万</div>
+                  <div>政府资助：50-100万</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-container">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">中期（12-24月）</h3>
+              <div class="text-center">
+                <div class="text-3xl font-bold text-green-600 mb-2">500-1000万</div>
+                <div class="text-sm text-gray-600">模型授权+技术服务</div>
+                <div class="mt-4 space-y-2 text-xs text-gray-500">
+                  <div>模型授权：200-500万</div>
+                  <div>技术服务：200-400万</div>
+                  <div>硬件预售：100-200万</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-container">
+              <h3 class="text-lg font-bold text-gray-900 mb-4">长期（24月+）</h3>
+              <div class="text-center">
+                <div class="text-3xl font-bold text-red-600 mb-2">2000-5000万</div>
+                <div class="text-sm text-gray-600">硬件设备+年费</div>
+                <div class="mt-4 space-y-2 text-xs text-gray-500">
+                  <div>硬件销售：1500-4000万</div>
+                  <div>模型授权：300-600万</div>
+                  <div>技术支持：200-500万</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+            <div class="chart-container">
+              <h3 class="text-xl font-bold text-gray-900 mb-6">核心收入来源</h3>
+              <div class="space-y-6">
+                <div class="border-l-4 border-blue-500 pl-4">
+                  <h4 class="font-bold text-gray-900 mb-2">模型授权</h4>
+                  <div class="text-sm text-gray-600 space-y-1">
+                    <div>定价：50-200万/年/机型</div>
+                    <div>按部署量梯度定价</div>
+                    <div>年度订阅授权模式</div>
+                  </div>
+                </div>
+
+                <div class="border-l-4 border-green-500 pl-4">
+                  <h4 class="font-bold text-gray-900 mb-2">硬件模组</h4>
+                  <div class="text-sm text-gray-600 space-y-1">
+                    <div>定价：3-10万元/台</div>
+                    <div>毛利率目标：40-50%</div>
+                    <div>年度维保升级服务</div>
+                  </div>
+                </div>
+
+                <div class="border-l-4 border-orange-500 pl-4">
+                  <h4 class="font-bold text-gray-900 mb-2">技术服务</h4>
+                  <div class="text-sm text-gray-600 space-y-1">
+                    <div>定价：50-300万/项目</div>
+                    <div>专项优化服务</div>
+                    <div>联合研发项目</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-container">
+              <h3 class="text-xl font-bold text-gray-900 mb-6">客户价值分析</h3>
+              <div class="space-y-4">
+                <div class="bg-blue-50 p-4 rounded">
+                  <h4 class="font-bold text-blue-900 mb-2">当前方案成本</h4>
+                  <div class="text-2xl font-bold text-blue-600 mb-1">8-15万/台</div>
+                  <div class="text-sm text-blue-700">高端GPU + 维护成本</div>
+                </div>
+
+                <div class="bg-green-50 p-4 rounded">
+                  <h4 class="font-bold text-green-900 mb-2">ServoFlow方案</h4>
+                  <div class="text-2xl font-bold text-green-600 mb-1">5万硬件 + 0.1万/年/台</div>
+                  <div class="text-sm text-green-700">硬件成本降低30-50%</div>
+                </div>
+
+                <div class="bg-yellow-50 p-4 rounded">
+                  <h4 class="font-bold text-yellow-900 mb-2">节省效益</h4>
+                  <div class="text-sm text-yellow-700 space-y-1">
+                    <div>• 集成周期缩短3-6个月</div>
+                    <div>• 工程团队投入减少50-80%</div>
+                    <div>• 产品上市时间加速2个月</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Roadmap -->
+      <section id="roadmap" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">产品路线图</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">技术验证阶段（当前）</h3>
+
+              <div class="space-y-6">
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-green-600 mb-3">
+                    <i class="fas fa-check-circle mr-2"></i>
+                    M1：框架MVP（已完成）
+                  </h4>
+                  <ul class="text-sm text-gray-600 space-y-2">
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500 text-xs"></i>
+                      <span>C++推理引擎核心</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500 text-xs"></i>
+                      <span>RDT-1B模型适配</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500 text-xs"></i>
+                      <span>FlashAttention集成</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-check text-green-500 text-xs"></i>
+                      <span>双流异步执行</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-blue-600 mb-3">
+                    <i class="fas fa-clock mr-2"></i>
+                    M2：Benchmark发布（6个月）
+                  </h4>
+                  <ul class="text-sm text-gray-600 space-y-2">
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-blue-500 text-xs"></i>
+                      <span>RDT-1B真实权重测试</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-blue-500 text-xs"></i>
+                      <span>ServoFlow开源发布</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-blue-500 text-xs"></i>
+                      <span>3家客户深度访谈</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">商业验证阶段</h3>
+
+              <div class="space-y-6">
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-orange-600 mb-3">
+                    <i class="fas fa-rocket mr-2"></i>
+                    M3：首批客户接入（12个月）
+                  </h4>
+                  <ul class="text-sm text-gray-600 space-y-2">
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-orange-500 text-xs"></i>
+                      <span>1-2家Pilot客户实机验证</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-orange-500 text-xs"></i>
+                      <span>RDT-1B蒸馏版本发布</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-orange-500 text-xs"></i>
+                      <span>INT8量化支持</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-orange-500 text-xs"></i>
+                      <span>模型授权签约</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-red-600 mb-3">
+                    <i class="fas fa-industry mr-2"></i>
+                    M4：规模化落地（24个月）
+                  </h4>
+                  <ul class="text-sm text-gray-600 space-y-2">
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-red-500 text-xs"></i>
+                      <span>硬件模组v1.0量产</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-red-500 text-xs"></i>
+                      <span>5+家规模客户</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-red-500 text-xs"></i>
+                      <span>硬件出货&gt;500台</span>
+                    </li>
+                    <li class="flex items-center space-x-2">
+                      <i class="fas fa-circle text-red-500 text-xs"></i>
+                      <span>建立模型生态</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Team -->
+      <section id="team" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">团队介绍</h2>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 mb-12">
+            <div class="text-center">
+              <div class="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-code text-3xl text-blue-600"></i>
+              </div>
+              <h3 class="text-lg font-bold text-gray-900 mb-2">端侧推理框架</h3>
+              <p class="text-sm text-gray-600">具备端到端推理框架研发经验</p>
+            </div>
+
+            <div class="text-center">
+              <div class="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-compress-arrows-alt text-3xl text-green-600"></i>
+              </div>
+              <h3 class="text-lg font-bold text-gray-900 mb-2">模型压缩</h3>
+              <p class="text-sm text-gray-600">量化、蒸馏、剪枝实际落地经验</p>
+            </div>
+
+            <div class="text-center">
+              <div class="w-20 h-20 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-tachometer-alt text-3xl text-purple-600"></i>
+              </div>
+              <h3 class="text-lg font-bold text-gray-900 mb-2">CUDA加速</h3>
+              <p class="text-sm text-gray-600">Jetson等嵌入式GPU平台加速经验</p>
+            </div>
+
+            <div class="text-center">
+              <div class="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-robot text-3xl text-red-600"></i>
+              </div>
+              <h3 class="text-lg font-bold text-gray-900 mb-2">具身智能</h3>
+              <p class="text-sm text-gray-600">VLA技术栈理解和应用</p>
+            </div>
+          </div>
+
+          <div class="chart-container">
+            <h3 class="text-xl font-bold text-gray-900 mb-6">团队能力矩阵</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div>
+                <h4 class="font-semibold mb-4">核心技术能力</h4>
+                <div class="space-y-3">
+                  <div class="flex justify-between items-center">
+                    <span>C++/CUDA系统编程</span>
+                    <div class="flex space-x-1">
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span>深度学习模型优化</span>
+                    <div class="flex space-x-1">
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span>VLA算法理解</span>
+                    <div class="flex space-x-1">
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <h4 class="font-semibold mb-4">工程实现能力</h4>
+                <div class="space-y-3">
+                  <div class="flex justify-between items-center">
+                    <span>实时系统开发</span>
+                    <div class="flex space-x-1">
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span>硬件平台适配</span>
+                    <div class="flex space-x-1">
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span>开源社区运营</span>
+                    <div class="flex space-x-1">
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                      <div class="w-3 h-3 bg-gray-300 rounded-full"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Financial Plan -->
+      <section id="financial-plan" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">财务规划</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+            <div class="chart-container">
+              <h3 class="text-xl font-bold text-gray-900 mb-6">本轮融资需求</h3>
+              <div class="space-y-6">
+                <div class="bg-blue-50 p-4 rounded">
+                  <h4 class="font-bold text-blue-900 mb-2">天使/Pre-A轮</h4>
+                  <div class="text-2xl font-bold text-blue-600 mb-1">¥[待定]</div>
+                  <div class="text-sm text-blue-700">18-24个月Runway至A轮节点</div>
+                </div>
+
+                <div class="space-y-4">
+                  <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <span class="font-medium">技术研发（人力）</span>
+                    <div class="text-right">
+                      <div class="font-bold text-gray-900">60%</div>
+                      <div class="text-xs text-gray-500">3-4人×12个月</div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <span class="font-medium">算力资源</span>
+                    <div class="text-right">
+                      <div class="font-bold text-gray-900">15%</div>
+                      <div class="text-xs text-gray-500">GPU集群费用</div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <span class="font-medium">市场与商务</span>
+                    <div class="text-right">
+                      <div class="font-bold text-gray-900">10%</div>
+                      <div class="text-xs text-gray-500">客户对接、合规</div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <span class="font-medium">硬件原型</span>
+                    <div class="text-right">
+                      <div class="font-bold text-gray-900">10%</div>
+                      <div class="text-xs text-gray-500">5-10台原型机</div>
+                    </div>
+                  </div>
+                  <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <span class="font-medium">日常运营</span>
+                    <div class="text-right">
+                      <div class="font-bold text-gray-900">5%</div>
+                      <div class="text-xs text-gray-500">办公、法务等</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-container">
+              <h3 class="text-xl font-bold text-gray-900 mb-6">关键里程碑</h3>
+              <div class="space-y-4">
+                <div class="border-l-4 border-green-500 pl-4">
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="font-bold">现在</span>
+                    <span class="text-sm text-gray-500">天使/Pre-A轮</span>
+                  </div>
+                  <div class="text-sm text-gray-600">技术验证完成，寻求商业验证跨越</div>
+                </div>
+
+                <div class="border-l-4 border-blue-500 pl-4">
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="font-bold">6个月</span>
+                    <span class="text-sm text-gray-500">开源发布</span>
+                  </div>
+                  <div class="text-sm text-gray-600">Benchmark验证，建立技术公信力</div>
+                </div>
+
+                <div class="border-l-4 border-orange-500 pl-4">
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="font-bold">12个月</span>
+                    <span class="text-sm text-gray-500">Pilot收入</span>
+                  </div>
+                  <div class="text-sm text-gray-600">首笔模型授权收入，商业模式验证</div>
+                </div>
+
+                <div class="border-l-4 border-red-500 pl-4">
+                  <div class="flex justify-between items-center mb-1">
+                    <span class="font-bold">24个月</span>
+                    <span class="text-sm text-gray-500">A轮就绪</span>
+                  </div>
+                  <div class="text-sm text-gray-600">硬件量产启动，规模化增长验证</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Risk Assessment -->
+      <section id="risk-assessment" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">风险识别与应对</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">技术风险</h3>
+
+              <div class="space-y-6">
+                <div class="border-l-4 border-yellow-400 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">VLA架构演化</h4>
+                  <div class="flex items-center space-x-2 mb-2">
+                    <span class="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs">概率：中</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mb-2">新架构（如Mamba、RWKV）替代DiT，优化方案过时</p>
+                  <div class="text-xs text-gray-500">应对：架构抽象层支持多模型适配，保持与学术界同步</div>
+                </div>
+
+                <div class="border-l-4 border-orange-400 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">实时性目标不达</h4>
+                  <div class="flex items-center space-x-2 mb-2">
+                    <span class="bg-orange-100 text-orange-800 px-2 py-1 rounded text-xs">概率：中</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mb-2">50Hz目标受硬件/模型限制无法实现</p>
+                  <div class="text-xs text-gray-500">应对：分阶段目标，第一阶段5-8×已显著领先</div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">市场与运营风险</h3>
+
+              <div class="space-y-6">
+                <div class="border-l-4 border-blue-400 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">量产延后</h4>
+                  <div class="flex items-center space-x-2 mb-2">
+                    <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">概率：中</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mb-2">机器人公司量产时间表推迟，需求不及预期</p>
+                  <div class="text-xs text-gray-500">应对：同步布局研究机构用户，维持开源社区热度</div>
+                </div>
+
+                <div class="border-l-4 border-green-400 pl-6">
+                  <h4 class="font-bold text-gray-900 mb-2">资金断裂</h4>
+                  <div class="flex items-center space-x-2 mb-2">
+                    <span class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs">概率：高</span>
+                  </div>
+                  <p class="text-sm text-gray-600 mb-2">融资进度不及预期，现金流紧张</p>
+                  <div class="text-xs text-gray-500">应对：积极申请政府资助与大赛奖金，低成本验证优先</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="section-divider"></div>
+
+      <!-- Government Support -->
+      <section id="government-support" class="container mx-auto px-8 py-16">
+        <div class="max-w-6xl">
+          <h2 class="serif text-4xl font-bold text-gray-900 mb-8">政府资助与大赛适配</h2>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-12">
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">政策方向匹配</h3>
+
+              <div class="space-y-6">
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-red-600 mb-3">
+                    <i class="fas fa-flag mr-2"></i>
+                    国家级政策
+                  </h4>
+                  <div class="space-y-3 text-sm text-gray-600">
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-star text-red-500"></i>
+                      <span>新一代人工智能重大专项</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-star text-red-500"></i>
+                      <span>科技型中小企业认定</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="border border-gray-200 rounded-lg p-6">
+                  <h4 class="font-bold text-blue-600 mb-3">
+                    <i class="fas fa-city mr-2"></i>
+                    省市级政策
+                  </h4>
+                  <div class="space-y-3 text-sm text-gray-600">
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-star text-blue-500"></i>
+                      <span>北京/上海/深圳具身智能专项资金</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <i class="fas fa-star text-blue-500"></i>
+                      <span>工业软件自主可控专项</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 class="text-2xl font-bold text-gray-900 mb-6">核心创新点评审要素</h3>
+
+              <div class="chart-container">
+                <h4 class="font-semibold mb-4">量化评审要素</h4>
+                <div class="space-y-4">
+                  <div class="border-l-4 border-green-500 pl-4">
+                    <h5 class="font-bold text-gray-900 mb-1">原创性</h5>
+                    <p class="text-sm text-gray-600">GitHub开源+技术博客+学术引用三位一体</p>
+                    <div class="text-xs text-green-600 font-medium">评分：★★★★★</div>
+                  </div>
+                  <div class="border-l-4 border-blue-500 pl-4">
+                    <h5 class="font-bold text-gray-900 mb-1">先进性</h5>
+                    <p class="text-sm text-gray-600">vs diffusers 5-8×，vs TensorRT 3-5×</p>
+                    <div class="text-xs text-blue-600 font-medium">评分：★★★★★</div>
+                  </div>
+                  <div class="border-l-4 border-orange-500 pl-4">
+                    <h5 class="font-bold text-gray-900 mb-1">实用性</h5>
+                    <p class="text-sm text-gray-600">智元π0.5验证需求真实性，Pilot客户明确</p>
+                    <div class="text-xs text-orange-600 font-medium">评分：★★★★★</div>
+                  </div>
+                  <div class="border-l-4 border-purple-500 pl-4">
+                    <h5 class="font-bold text-gray-900 mb-1">带动性</h5>
+                    <p class="text-sm text-gray-600">开发者社区→企业版SLA→认证合作生态</p>
+                    <div class="text-xs text-purple-600 font-medium">评分：★★★★★</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-container">
+            <h3 class="text-xl font-bold text-gray-900 mb-6">社会经济价值论证</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div class="text-center">
+                <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <i class="fas fa-industry text-2xl text-blue-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">产业跨越</h4>
+                <p class="text-sm text-gray-600">从&#34;能演示&#34;到&#34;能量产&#34;的关键基础设施</p>
+                <div class="text-xs text-blue-600 mt-2">推理延迟100ms→20ms</div>
+              </div>
+
+              <div class="text-center">
+                <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <i class="fas fa-chart-line text-2xl text-green-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">成本普惠</h4>
+                <p class="text-sm text-gray-600">降低中小企业AI推理门槛</p>
+                <div class="text-xs text-green-600 mt-2">工程投入减少20-50%</div>
+              </div>
+
+              <div class="text-center">
+                <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <i class="fas fa-shield-alt text-2xl text-red-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">自主可控</h4>
+                <p class="text-sm text-gray-600">减少境外软件栈依赖</p>
+                <div class="text-xs text-red-600 mt-2">全自研C++/CUDA</div>
+              </div>
+
+              <div class="text-center">
+                <div class="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <i class="fas fa-users text-2xl text-purple-600"></i>
+                </div>
+                <h4 class="font-bold text-gray-900 mb-2">人才培育</h4>
+                <p class="text-sm text-gray-600">VLA推理专业技术团队</p>
+                <div class="text-xs text-purple-600 mt-2">3-4人核心团队</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <footer class="bg-gray-900 text-white py-12">
+        <div class="container mx-auto px-8">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div>
+              <h3 class="text-xl font-bold mb-4">ServoFlow</h3>
+              <p class="text-gray-400 text-sm">
+                面向具身智能的全栈实时VLA推理解决方案
+              </p>
+            </div>
+            <div>
+              <h4 class="font-bold mb-4">联系方式</h4>
+              <div class="space-y-2 text-sm text-gray-400">
+                <div><i class="fas fa-envelope mr-2"></i>contact@servoflow.ai</div>
+                <div><i class="fas fa-phone mr-2"></i>[待补充]</div>
+                <div><i class="fas fa-map-marker-alt mr-2"></i>[待补充]</div>
+              </div>
+            </div>
+            <div>
+              <h4 class="font-bold mb-4">文件信息</h4>
+              <div class="space-y-2 text-sm text-gray-400">
+                <div><i class="fas fa-calendar mr-2"></i>2026年2月</div>
+                <div><i class="fas fa-tag mr-2"></i>v1.0</div>
+                <div><i class="fas fa-shield-alt mr-2"></i>机密文件</div>
+              </div>
+            </div>
+          </div>
+          <div class="border-t border-gray-700 mt-8 pt-8 text-center text-sm text-gray-400">
+            <p>© 2026 ServoFlow. Apache 2.0开源许可（框架层）</p>
+          </div>
+        </div>
+      </footer>
+    </main>
+
+    <script>
+        // Table of Contents Active Link
+        const tocLinks = document.querySelectorAll('.toc-link');
+        const sections = document.querySelectorAll('section[id]');
+
+        function updateActiveLink() {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                const sectionHeight = section.clientHeight;
+                if (window.scrollY >= (sectionTop - 200)) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            tocLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+
+        window.addEventListener('scroll', updateActiveLink);
+        updateActiveLink();
+
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+    </script>
+  
+
+</body></html>
