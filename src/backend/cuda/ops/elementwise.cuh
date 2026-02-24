@@ -82,6 +82,18 @@ __global__ void binary_kernel(const T* __restrict__ a,
         out[idx] = op(a[idx], b[idx]);
 }
 
+// Broadcast version: b has b_n elements; b[idx % b_n] is used (e.g. bias add).
+template<typename T, typename Op>
+__global__ void binary_kernel_bcast(const T* __restrict__ a,
+                                     const T* __restrict__ b,
+                                     T* __restrict__ out,
+                                     int64_t n, int64_t b_n, Op op) {
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (; idx < n; idx += stride)
+        out[idx] = op(a[idx], b[idx % b_n]);
+}
+
 template<typename T, typename Op>
 __global__ void unary_kernel(const T* __restrict__ x,
                               T* __restrict__ out,
@@ -122,25 +134,50 @@ inline int64_t grid_size(int64_t n) {
 template<typename Op>
 void elementwise_binary(const Tensor& a, const Tensor& b, Tensor& out,
                         cudaStream_t stream) {
-    int64_t n = a.numel();
-    switch (a.dtype()) {
-        case DType::Float32:
-            binary_kernel<<<grid_size(n), kBlockSize, 0, stream>>>(
-                a.data_ptr<float>(), b.data_ptr<float>(),
-                out.data_ptr<float>(), n, Op{});
-            break;
-        case DType::Float16:
-            binary_kernel<<<grid_size(n), kBlockSize, 0, stream>>>(
-                a.data_ptr<__half>(), b.data_ptr<__half>(),
-                out.data_ptr<__half>(), n, Op{});
-            break;
-        case DType::BFloat16:
-            binary_kernel<<<grid_size(n), kBlockSize, 0, stream>>>(
-                a.data_ptr<__nv_bfloat16>(), b.data_ptr<__nv_bfloat16>(),
-                out.data_ptr<__nv_bfloat16>(), n, Op{});
-            break;
-        default:
-            throw std::runtime_error("elementwise_binary: unsupported dtype");
+    int64_t n   = a.numel();
+    int64_t b_n = b.numel();
+    // Use broadcast kernel when b is smaller (e.g. bias add: [N,D] + [D]).
+    if (b_n == n) {
+        switch (a.dtype()) {
+            case DType::Float32:
+                binary_kernel<<<grid_size(n), kBlockSize, 0, stream>>>(
+                    a.data_ptr<float>(), b.data_ptr<float>(),
+                    out.data_ptr<float>(), n, Op{});
+                break;
+            case DType::Float16:
+                binary_kernel<<<grid_size(n), kBlockSize, 0, stream>>>(
+                    a.data_ptr<__half>(), b.data_ptr<__half>(),
+                    out.data_ptr<__half>(), n, Op{});
+                break;
+            case DType::BFloat16:
+                binary_kernel<<<grid_size(n), kBlockSize, 0, stream>>>(
+                    a.data_ptr<__nv_bfloat16>(), b.data_ptr<__nv_bfloat16>(),
+                    out.data_ptr<__nv_bfloat16>(), n, Op{});
+                break;
+            default:
+                throw std::runtime_error("elementwise_binary: unsupported dtype");
+        }
+    } else {
+        // Broadcast b over a: requires n % b_n == 0.
+        switch (a.dtype()) {
+            case DType::Float32:
+                binary_kernel_bcast<<<grid_size(n), kBlockSize, 0, stream>>>(
+                    a.data_ptr<float>(), b.data_ptr<float>(),
+                    out.data_ptr<float>(), n, b_n, Op{});
+                break;
+            case DType::Float16:
+                binary_kernel_bcast<<<grid_size(n), kBlockSize, 0, stream>>>(
+                    a.data_ptr<__half>(), b.data_ptr<__half>(),
+                    out.data_ptr<__half>(), n, b_n, Op{});
+                break;
+            case DType::BFloat16:
+                binary_kernel_bcast<<<grid_size(n), kBlockSize, 0, stream>>>(
+                    a.data_ptr<__nv_bfloat16>(), b.data_ptr<__nv_bfloat16>(),
+                    out.data_ptr<__nv_bfloat16>(), n, b_n, Op{});
+                break;
+            default:
+                throw std::runtime_error("elementwise_binary: unsupported dtype");
+        }
     }
 }
 

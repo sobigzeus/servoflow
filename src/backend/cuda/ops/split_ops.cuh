@@ -115,6 +115,96 @@ inline void split_qkv_kernel(const Tensor& qkv,
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// seq_to_head: [B, S, H*D] → [B, H, S, D]
+// Physically permutes from sequence-major to head-major layout.
+// ─────────────────────────────────────────────────────────────────────────────
+template<typename T>
+__global__ void seq_to_head_kernel_impl(const T* __restrict__ src,
+                                         T* __restrict__ dst,
+                                         int64_t B, int64_t S, int64_t H, int64_t D) {
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = B * H * S * D;
+    if (idx >= total) return;
+
+    int64_t b = idx / (H * S * D);
+    int64_t h = (idx / (S * D)) % H;
+    int64_t s = (idx / D) % S;
+    int64_t d = idx % D;
+
+    // src layout: [B, S, H*D]  → src[b, s, h*D + d]
+    dst[idx] = src[b * S * H * D + s * H * D + h * D + d];
+}
+
+inline void seq_to_head(const Tensor& src, Tensor& dst,
+                         int64_t H, int64_t D,
+                         BackendPtr /*backend*/, StreamHandle stream) {
+    cudaStream_t cs = reinterpret_cast<cudaStream_t>(stream);
+    int64_t B = src.shape()[0];
+    int64_t S = src.shape()[1];
+    int64_t total = B * H * S * D;
+    int64_t grid  = (total + 255) / 256;
+
+    switch (src.dtype()) {
+        case DType::Float32:
+            seq_to_head_kernel_impl<float><<<grid, 256, 0, cs>>>(
+                src.data_ptr<float>(), dst.data_ptr<float>(), B, S, H, D); break;
+        case DType::Float16:
+            seq_to_head_kernel_impl<__half><<<grid, 256, 0, cs>>>(
+                src.data_ptr<__half>(), dst.data_ptr<__half>(), B, S, H, D); break;
+        case DType::BFloat16:
+            seq_to_head_kernel_impl<__nv_bfloat16><<<grid, 256, 0, cs>>>(
+                src.data_ptr<__nv_bfloat16>(), dst.data_ptr<__nv_bfloat16>(), B, S, H, D); break;
+        default:
+            throw std::runtime_error("seq_to_head: unsupported dtype");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// head_to_seq: [B, H, S, D] → [B, S, H*D]
+// Inverse of seq_to_head. Converts attention output back to sequence-major.
+// ─────────────────────────────────────────────────────────────────────────────
+template<typename T>
+__global__ void head_to_seq_kernel_impl(const T* __restrict__ src,
+                                         T* __restrict__ dst,
+                                         int64_t B, int64_t H, int64_t S, int64_t D) {
+    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = B * H * S * D;
+    if (idx >= total) return;
+
+    int64_t b = idx / (H * S * D);
+    int64_t h = (idx / (S * D)) % H;
+    int64_t s = (idx / D) % S;
+    int64_t d = idx % D;
+
+    // dst layout: [B, S, H*D]  → dst[b, s, h*D + d]
+    dst[b * S * H * D + s * H * D + h * D + d] = src[idx];
+}
+
+inline void head_to_seq(const Tensor& src, Tensor& dst,
+                         int64_t H, int64_t D,
+                         BackendPtr /*backend*/, StreamHandle stream) {
+    cudaStream_t cs = reinterpret_cast<cudaStream_t>(stream);
+    int64_t B = src.shape()[0];
+    int64_t S = src.shape()[2];
+    int64_t total = B * H * S * D;
+    int64_t grid  = (total + 255) / 256;
+
+    switch (src.dtype()) {
+        case DType::Float32:
+            head_to_seq_kernel_impl<float><<<grid, 256, 0, cs>>>(
+                src.data_ptr<float>(), dst.data_ptr<float>(), B, H, S, D); break;
+        case DType::Float16:
+            head_to_seq_kernel_impl<__half><<<grid, 256, 0, cs>>>(
+                src.data_ptr<__half>(), dst.data_ptr<__half>(), B, H, S, D); break;
+        case DType::BFloat16:
+            head_to_seq_kernel_impl<__nv_bfloat16><<<grid, 256, 0, cs>>>(
+                src.data_ptr<__nv_bfloat16>(), dst.data_ptr<__nv_bfloat16>(), B, H, S, D); break;
+        default:
+            throw std::runtime_error("head_to_seq: unsupported dtype");
+    }
+}
+
 // split_kv: [B, S, 2*H*D] → K[B,H,S,D], V[B,H,S,D]
 template<typename T>
 __global__ void split_kv_kernel_impl(const T* __restrict__ kv,

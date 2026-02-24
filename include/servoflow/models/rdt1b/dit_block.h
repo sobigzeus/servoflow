@@ -1,6 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+// RDT-1B transformer block (RDTBlock).
+//
+// Architecture (from https://github.com/thu-ml/RoboticsDiffusionTransformer):
+//   norm1 (RmsNorm, eps=1e-6)
+//   → self-attn (timm Attention: qkv_bias=True, qk_norm=True via RmsNorm(head_dim))
+//   → residual
+//   norm2 (RmsNorm)
+//   → cross-attn (CrossAttention: q from x, kv from condition;
+//                 qkv_bias=True, qk_norm=True; alternating: even=lang, odd=img)
+//   → residual
+//   norm3 (RmsNorm)
+//   → MLP (timm Mlp: fc1 D→D + GELU(tanh) + fc2 D→D)
+//   → residual
+//
+// FinalLayer: norm_final (RmsNorm) + ffn_final (Mlp D→D→action_dim)
+//
+// TimestepEmbedding: sinusoidal(256) → Linear(256→D) → SiLU → Linear(D→D)
+//   Produces a single [B, D] token that is prepended to x as a position token.
+
 #include "servoflow/models/rdt1b/config.h"
 #include "servoflow/backend/backend.h"
 #include "servoflow/core/tensor.h"
@@ -10,199 +29,186 @@
 namespace sf {
 namespace rdt1b {
 
-// Alias for the weight map loaded from a checkpoint.
 using WeightMap = std::unordered_map<std::string, Tensor>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TimestepEmbedding
 //
-// Converts a scalar timestep t ∈ [0,1] into a dense embedding vector.
-// Architecture (standard for DiT / RDT):
-//   1. Sinusoidal positional encoding: t → R^{freq_dim}
-//   2. Linear + SiLU → R^{time_embed_dim}
-//   3. Linear         → R^{time_embed_dim}
+// Embeds a scalar integer timestep t ∈ [0, num_train_timesteps) into a
+// dense vector: sinusoidal(t, 256) → Linear+SiLU → Linear → [1, hidden_dim]
 // ─────────────────────────────────────────────────────────────────────────────
 class TimestepEmbedding {
 public:
     TimestepEmbedding() = default;
 
+    // prefix: e.g. "t_embedder." or "freq_embedder."
+    // Weight names: prefix + "mlp.0.weight/bias", "mlp.2.weight/bias"
     void load(const WeightMap& weights, const std::string& prefix,
               const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
 
-    // Input: t (scalar, host-side float)
-    // Output: embedding [1, time_embed_dim]
-    Tensor forward(float t, BackendPtr backend, StreamHandle stream) const;
+    // t: integer diffusion timestep (0 .. num_train_timesteps-1)
+    // Returns [1, hidden_dim]
+    Tensor forward(int64_t t, BackendPtr backend, StreamHandle stream) const;
 
 private:
-    // Sinusoidal encoding lookup table (pre-computed at load time).
-    // Shape: [max_timesteps, freq_dim], stored on device.
-    Tensor sincos_table_;   // [1000, freq_dim]
+    Tensor mlp0_weight_;   // [hidden_dim, freq_dim]
+    Tensor mlp0_bias_;     // [hidden_dim]
+    Tensor mlp2_weight_;   // [hidden_dim, hidden_dim]
+    Tensor mlp2_bias_;     // [hidden_dim]
 
-    // MLP weights.
-    Tensor linear1_weight_;  // [time_embed_dim, freq_dim]
-    Tensor linear1_bias_;    // [time_embed_dim]
-    Tensor linear2_weight_;  // [time_embed_dim, time_embed_dim]
-    Tensor linear2_bias_;    // [time_embed_dim]
+    // Pre-computed sinusoidal table: [num_train_timesteps, freq_dim] on device.
+    Tensor sincos_table_;
 
     int64_t freq_dim_      = 256;
     int64_t embed_dim_     = 2048;
+    int64_t max_timesteps_ = 1000;
 
     void build_sincos_table(BackendPtr backend, StreamHandle stream);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AdaLNModulation
+// MLP — timm's Mlp with 1× hidden (no expansion)
 //
-// Adaptive Layer Norm zero (adaLN-zero): given a conditioning vector c,
-// produce scale and shift for a layer norm output.
-//
-// c → SiLU → Linear → [scale, shift]  (both R^{hidden_dim})
-//
-// Applied as: out = (1 + scale) * LayerNorm(x) + shift
-// The "(1 + ...)" trick initialises the block as identity at t=0.
+// forward(x): fc1(x) → GELU(tanh) → fc2(x)
+// Weight names: prefix + "fc1.weight/bias", "fc2.weight/bias"
 // ─────────────────────────────────────────────────────────────────────────────
-class AdaLNModulation {
+class Mlp {
 public:
-    AdaLNModulation() = default;
+    Mlp() = default;
 
+    // in_dim: input/hidden dim; out_dim: output dim (= in_dim for blocks,
+    //         = action_dim for final layer's ffn_final)
     void load(const WeightMap& weights, const std::string& prefix,
-              const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
-
-    // Returns [scale, shift], each [B, hidden_dim].
-    // c: condition vector [B, time_embed_dim]
-    struct Params { Tensor scale; Tensor shift; };
-    Params forward(const Tensor& c, BackendPtr backend,
-                   StreamHandle stream) const;
-
-private:
-    Tensor linear_weight_;  // [2 * hidden_dim, time_embed_dim]
-    Tensor linear_bias_;    // [2 * hidden_dim]
-    int64_t hidden_dim_ = 2048;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FeedForward (SwiGLU variant used in RDT-1B)
-//
-// x → [gate, up] = Linear(x, 2*ffn_dim)
-// out = down(SiLU(gate) * up)
-//
-// This is the gated linear unit (GLU) variant, which outperforms plain GELU
-// FFN in practice and is used in modern transformer architectures.
-// ─────────────────────────────────────────────────────────────────────────────
-class FeedForward {
-public:
-    FeedForward() = default;
-
-    void load(const WeightMap& weights, const std::string& prefix,
-              const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
-
-    // x: [B, S, hidden_dim] → out: [B, S, hidden_dim]
-    void forward(const Tensor& x, Tensor& out,
-                 BackendPtr backend, StreamHandle stream) const;
-
-private:
-    Tensor gate_up_weight_;  // [2 * ffn_dim, hidden_dim]
-    Tensor gate_up_bias_;    // [2 * ffn_dim]
-    Tensor down_weight_;     // [hidden_dim, ffn_dim]
-    Tensor down_bias_;       // [hidden_dim]
-
-    int64_t hidden_dim_ = 2048;
-    int64_t ffn_dim_    = 8192;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MultiHeadAttention
-//
-// Supports both self-attention and cross-attention.
-// Uses FlashAttention on CUDA backend when inputs are fp16/bf16.
-// ─────────────────────────────────────────────────────────────────────────────
-class MultiHeadAttention {
-public:
-    MultiHeadAttention() = default;
-
-    // prefix: e.g. "blocks.0.attn."
-    // if cross_attn=true, keys/values come from a separate context sequence.
-    void load(const WeightMap& weights, const std::string& prefix,
-              const RDT1BConfig& cfg, bool cross_attn,
+              int64_t in_dim, int64_t out_dim, DType dt,
               BackendPtr backend, StreamHandle stream);
 
-    // Self-attention: x → x   (x: [B, S, D])
-    void forward(const Tensor& x, Tensor& out,
-                 bool is_causal,
-                 BackendPtr backend, StreamHandle stream) const;
-
-    // Cross-attention: query from x, key/value from context.
-    // x:       [B, Sq, D]
-    // context: [B, Sk, D]
-    void forward_cross(const Tensor& x, const Tensor& context,
-                       Tensor& out,
-                       BackendPtr backend, StreamHandle stream) const;
+    // x: [B, S, in_dim] → out: [B, S, out_dim]
+    Tensor forward(const Tensor& x, BackendPtr backend, StreamHandle stream) const;
 
 private:
-    // For self-attention: fused Q,K,V projection [3*hidden, hidden].
-    Tensor qkv_weight_;   // [3 * hidden_dim, hidden_dim]
-    Tensor qkv_bias_;     // [3 * hidden_dim]
+    Tensor fc1_weight_;   // [in_dim, in_dim]
+    Tensor fc1_bias_;     // [in_dim]
+    Tensor fc2_weight_;   // [out_dim, in_dim]
+    Tensor fc2_bias_;     // [out_dim]
+    int64_t in_dim_  = 2048;
+    int64_t out_dim_ = 2048;
+};
 
-    // For cross-attention: separate Q vs K,V projections.
-    Tensor q_weight_;     // [hidden_dim, hidden_dim]
-    Tensor q_bias_;
-    Tensor kv_weight_;    // [2 * hidden_dim, hidden_dim]
-    Tensor kv_bias_;
+// ─────────────────────────────────────────────────────────────────────────────
+// SelfAttention — timm's Attention module
+//
+// qkv = Linear(x, 3D, bias=True)  → split into q, k, v [B, H, S, head_dim]
+// q_norm, k_norm = RmsNorm(head_dim) on q and k (per-head normalisation)
+// out = scaled_dot_product_attention(q, k, v)  (FlashAttention)
+// return proj(reshape(out))
+//
+// Weight names: prefix + "qkv.weight/bias", "q_norm.weight", "k_norm.weight",
+//               "proj.weight/bias"
+// ─────────────────────────────────────────────────────────────────────────────
+class SelfAttention {
+public:
+    SelfAttention() = default;
 
-    Tensor out_weight_;   // [hidden_dim, hidden_dim]
-    Tensor out_bias_;     // [hidden_dim]
+    void load(const WeightMap& weights, const std::string& prefix,
+              const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
+
+    // x: [B, S, D] → out: [B, S, D]
+    Tensor forward(const Tensor& x, BackendPtr backend, StreamHandle stream) const;
+
+private:
+    Tensor qkv_weight_;      // [3*D, D]
+    Tensor qkv_bias_;        // [3*D]
+    Tensor q_norm_weight_;   // [head_dim]  RmsNorm weight
+    Tensor k_norm_weight_;   // [head_dim]
+    Tensor proj_weight_;     // [D, D]
+    Tensor proj_bias_;       // [D]
 
     int64_t hidden_dim_ = 2048;
     int64_t num_heads_  = 32;
     int64_t head_dim_   = 64;
-    bool    cross_attn_ = false;
+    float   norm_eps_   = 1e-6f;
 
-    // Splits [B, S, 3D] into three [B, H, S, head_dim] tensors.
-    void split_qkv(const Tensor& qkv,
-                   Tensor& Q, Tensor& K, Tensor& V,
-                   BackendPtr backend, StreamHandle stream) const;
+    // Apply per-head RmsNorm to Q or K of shape [B, H, S, head_dim].
+    void apply_qk_norm(Tensor& qk, const Tensor& weight,
+                       BackendPtr backend, StreamHandle stream) const;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DiTBlock: one transformer block with adaLN-zero conditioning.
+// CrossAttention
 //
-// Forward pass:
-//   1. adaLN modulation from timestep embedding c.
-//   2. Self-attention with pre-norm (applied on full sequence).
-//   3. Residual add.
-//   4. FFN with pre-norm.
-//   5. Residual add.
+// q from x [B, Sq, D], kv from condition c [B, Sk, D]
+// Same qk_norm as SelfAttention.
+// Optional key-padding mask [B, Sk] (True = keep, False = mask out).
 //
-// The action token subsequence uses causal masking within itself;
-// condition tokens (image, language) are fully visible to all tokens.
+// Weight names: prefix + "q.weight/bias", "kv.weight/bias",
+//               "q_norm.weight", "k_norm.weight", "proj.weight/bias"
 // ─────────────────────────────────────────────────────────────────────────────
-class DiTBlock {
+class CrossAttention {
 public:
-    DiTBlock() = default;
+    CrossAttention() = default;
 
-    // prefix: e.g. "dit.blocks.0."
     void load(const WeightMap& weights, const std::string& prefix,
-              const RDT1BConfig& cfg,
-              BackendPtr backend, StreamHandle stream);
+              const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
 
-    // x: [B, S_total, hidden_dim]
-    // c: timestep+condition embedding [B, time_embed_dim]
-    // cond_len: number of condition tokens (first cond_len tokens are condition)
-    // out: [B, S_total, hidden_dim]
-    void forward(const Tensor& x, const Tensor& c,
-                 int64_t cond_len, Tensor& out,
-                 BackendPtr backend, StreamHandle stream) const;
+    // x: [B, Sq, D]  c: [B, Sk, D]  mask: nullptr or [B, Sk] bool (host)
+    // Returns [B, Sq, D]
+    Tensor forward(const Tensor& x, const Tensor& c,
+                   BackendPtr backend, StreamHandle stream) const;
 
 private:
-    AdaLNModulation  adaln_;
-    MultiHeadAttention attn_;
-    FeedForward        ffn_;
+    Tensor q_weight_;        // [D, D]
+    Tensor q_bias_;          // [D]
+    Tensor kv_weight_;       // [2D, D]
+    Tensor kv_bias_;         // [2D]
+    Tensor q_norm_weight_;   // [head_dim]
+    Tensor k_norm_weight_;   // [head_dim]
+    Tensor proj_weight_;     // [D, D]
+    Tensor proj_bias_;       // [D]
 
-    // Pre-norm layer norms.
-    Tensor norm1_weight_;  // [hidden_dim]
-    Tensor norm1_bias_;
-    Tensor norm2_weight_;  // [hidden_dim]
-    Tensor norm2_bias_;
+    int64_t hidden_dim_ = 2048;
+    int64_t num_heads_  = 32;
+    int64_t head_dim_   = 64;
+    float   norm_eps_   = 1e-6f;
+
+    void apply_qk_norm(Tensor& qk, const Tensor& weight,
+                       BackendPtr backend, StreamHandle stream) const;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RDTBlock — one transformer block
+//
+// forward(x, cond, block_idx):
+//   x = x + self_attn(norm1(x))
+//   c = lang_cond if block_idx % 2 == 0 else img_cond
+//   x = x + cross_attn(norm2(x), c)
+//   x = x + mlp(norm3(x))
+//   return x
+// ─────────────────────────────────────────────────────────────────────────────
+class RDTBlock {
+public:
+    RDTBlock() = default;
+
+    // prefix: e.g. "blocks.0."
+    void load(const WeightMap& weights, const std::string& prefix,
+              const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
+
+    // x: [B, S, D]
+    // lang_cond: [B, L, D]   img_cond: [B, I, D]
+    // block_idx: used to alternate cross-attn condition (even=lang, odd=img)
+    Tensor forward(const Tensor& x,
+                   const Tensor& lang_cond, const Tensor& img_cond,
+                   int block_idx,
+                   BackendPtr backend, StreamHandle stream) const;
+
+private:
+    // 3 RmsNorm layers (weight only, no bias in RmsNorm)
+    Tensor norm1_weight_;  // [D]
+    Tensor norm2_weight_;  // [D]
+    Tensor norm3_weight_;  // [D]
+
+    SelfAttention  self_attn_;
+    CrossAttention cross_attn_;
+    Mlp            ffn_;
 
     int64_t hidden_dim_ = 2048;
     float   norm_eps_   = 1e-6f;
@@ -211,30 +217,23 @@ private:
 // ─────────────────────────────────────────────────────────────────────────────
 // FinalLayer
 //
-// After all DiT blocks, project from hidden_dim back to action_dim.
-// Also uses adaLN-zero conditioning.
+// norm_final (RmsNorm) + ffn_final (Mlp: D→D→action_dim)
+// Applied to all tokens; caller slices last action_horizon tokens.
 // ─────────────────────────────────────────────────────────────────────────────
 class FinalLayer {
 public:
     FinalLayer() = default;
 
+    // prefix: "final_layer."
     void load(const WeightMap& weights, const std::string& prefix,
-              const RDT1BConfig& cfg,
-              BackendPtr backend, StreamHandle stream);
+              const RDT1BConfig& cfg, BackendPtr backend, StreamHandle stream);
 
-    // x: [B, S_total, hidden_dim] → out: [B, T_action, action_dim]
-    // Only the action token subsequence (last action_horizon tokens) is output.
-    void forward(const Tensor& x, const Tensor& c,
-                 int64_t action_horizon, Tensor& out,
-                 BackendPtr backend, StreamHandle stream) const;
+    // x: [B, S, D] → out: [B, S, action_dim]
+    Tensor forward(const Tensor& x, BackendPtr backend, StreamHandle stream) const;
 
 private:
-    AdaLNModulation adaln_;
-
-    Tensor norm_weight_;   // [hidden_dim]
-    Tensor norm_bias_;
-    Tensor linear_weight_; // [action_dim, hidden_dim]
-    Tensor linear_bias_;   // [action_dim]
+    Tensor norm_final_weight_;   // [D]  RmsNorm
+    Mlp    ffn_final_;           // D→D→action_dim
 
     int64_t hidden_dim_ = 2048;
     float   norm_eps_   = 1e-6f;

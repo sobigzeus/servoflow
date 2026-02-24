@@ -113,15 +113,48 @@ void embedding_lookup(const Tensor& weight, const Tensor& indices,
 // All inputs must have the same dtype and shape[1..].
 // ─────────────────────────────────────────────────────────────────────────────
 void cat_kernel(const std::vector<Tensor>& inputs, Tensor& out,
-                int64_t /*dim*/, cudaStream_t stream) {
-    // Simple device-to-device copy approach — sufficient for VLA seq cat.
-    int64_t offset_bytes = 0;
+                int64_t dim, cudaStream_t stream) {
     char* dst = reinterpret_cast<char*>(out.raw_data_ptr());
-    for (const auto& t : inputs) {
-        size_t bytes = t.nbytes();
-        cudaMemcpyAsync(dst + offset_bytes, t.raw_data_ptr(),
-                        bytes, cudaMemcpyDeviceToDevice, stream);
-        offset_bytes += static_cast<int64_t>(bytes);
+    int elem_size = static_cast<int>(dtype_size(out.dtype()));
+
+    if (dim == 0) {
+        // dim=0: inputs are stacked along the first dimension.
+        // Each input is a contiguous block — just copy sequentially.
+        int64_t offset_bytes = 0;
+        for (const auto& t : inputs) {
+            size_t bytes = t.nbytes();
+            cudaMemcpyAsync(dst + offset_bytes, t.raw_data_ptr(),
+                            bytes, cudaMemcpyDeviceToDevice, stream);
+            offset_bytes += static_cast<int64_t>(bytes);
+        }
+    } else if (dim == 1) {
+        // dim=1: inputs are concatenated along the second dimension.
+        // Each input has shape [rows, cols_i]; output has shape [rows, sum(cols_i)].
+        // We interleave the rows: for each row r, copy row r from each input
+        // sequentially into the output row.
+        int64_t rows = inputs[0].shape()[0];  // all inputs must have same rows
+
+        // Compute per-input column widths in bytes.
+        std::vector<int64_t> col_bytes;
+        for (const auto& t : inputs)
+            col_bytes.push_back(static_cast<int64_t>(t.shape()[1]) * elem_size);
+
+        int64_t out_row_bytes = 0;
+        for (auto cb : col_bytes) out_row_bytes += cb;
+
+        for (int64_t r = 0; r < rows; ++r) {
+            int64_t dst_col_offset = 0;
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                const char* src = reinterpret_cast<const char*>(inputs[i].raw_data_ptr());
+                src += r * col_bytes[i];  // row r of input i
+                cudaMemcpyAsync(dst + r * out_row_bytes + dst_col_offset,
+                                src, col_bytes[i],
+                                cudaMemcpyDeviceToDevice, stream);
+                dst_col_offset += col_bytes[i];
+            }
+        }
+    } else {
+        throw std::runtime_error("cat_kernel: only dim=0 and dim=1 are supported");
     }
 }
 

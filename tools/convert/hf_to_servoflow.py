@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-hf_to_servoflow.py — Convert a HuggingFace RDT-1B checkpoint to ServoFlow format.
+hf_to_servoflow.py — Convert an HuggingFace RDT-1B checkpoint to ServoFlow format.
 
-What this script does:
-  1. Loads the HuggingFace safetensors checkpoint (model.safetensors or shards).
-  2. Remaps weight keys from HF naming conventions to ServoFlow naming conventions.
-  3. Optionally quantises weights (fp32 → fp16 / bf16).
-  4. Saves action normalisation statistics (mean / std).
-  5. Writes a ServoFlow-compatible config.json.
-  6. Outputs one or more .safetensors files in the target directory.
+The HuggingFace checkpoint is RDTRunner, which contains:
+  model.*           → RDT backbone (blocks, pos_embeds, t/freq_embedder)
+  lang_adaptor.*    → mlp2x_gelu for language tokens
+  img_adaptor.*     → mlp2x_gelu for image tokens
+  state_adaptor.*   → mlp3x_gelu for state+action tokens
+
+ServoFlow stripping convention:
+  model.*            → strip "model." prefix
+  lang_adaptor.*     → keep as-is
+  img_adaptor.*      → keep as-is
+  state_adaptor.*    → keep as-is
 
 Usage:
   python tools/convert/hf_to_servoflow.py \\
-      --input  /path/to/hf_rdt1b_checkpoint \\
-      --output /path/to/servoflow_checkpoint \\
+      --input  robotics-diffusion-transformer/rdt-1b  (HF hub id or local path)
+      --output /path/to/servoflow_checkpoint
       --dtype  fp16
 
 Requirements:
@@ -24,141 +28,149 @@ Requirements:
 import argparse
 import json
 import os
-import sys
+import re
+import shutil
 from pathlib import Path
 from typing import Dict, Optional
 
 import torch
-from safetensors.torch import load_file, save_file
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Key remapping: HuggingFace → ServoFlow naming convention.
-#
-# ServoFlow uses a flat naming scheme that maps directly to C++ struct members.
-# HuggingFace checkpoints typically use PyTorch module hierarchy naming.
+# Weight key remapping
 # ─────────────────────────────────────────────────────────────────────────────
-def build_key_map(hf_keys: list[str]) -> dict[str, str]:
-    """Build a HF-key → ServoFlow-key mapping for known patterns."""
+def remap_key(k: str) -> Optional[str]:
+    """Map one HuggingFace weight name to its ServoFlow equivalent.
+    Returns None if the key should be skipped.
+    """
+    # Skip EMA shadow parameters (not needed for inference).
+    if ".shadow_params" in k or k.startswith("ema_model."):
+        return None
+    # Skip optimizer / scheduler states.
+    if "optimizer" in k or "scheduler" in k:
+        return None
+
+    # ── RDT backbone: strip "model." prefix ──────────────────────────────
+    if k.startswith("model."):
+        return k[len("model."):]  # e.g. "model.blocks.0.norm1.weight" → "blocks.0.norm1.weight"
+
+    # ── Adaptors: keep as-is ──────────────────────────────────────────────
+    if k.startswith(("lang_adaptor.", "img_adaptor.", "state_adaptor.")):
+        return k
+
+    # ── Action normalisation stats ────────────────────────────────────────
+    if k.startswith("action_norm."):
+        return k
+
+    # Skip anything else (vision encoder if present, etc.)
+    return None
+
+
+def remap_all(hf_keys: list) -> dict:
     mapping = {}
-
     for k in hf_keys:
         sf_key = remap_key(k)
         if sf_key is not None:
             mapping[k] = sf_key
-
     return mapping
 
 
-def remap_key(k: str) -> Optional[str]:
-    """
-    Map one HuggingFace tensor name to its ServoFlow equivalent.
-    Returns None if the key should be skipped (e.g. T5 encoder weights).
-    """
-    # Skip T5 language encoder (not bundled in ServoFlow Phase 1).
-    if k.startswith("language_model.") or k.startswith("t5_encoder."):
-        return None
+# ─────────────────────────────────────────────────────────────────────────────
+# Checkpoint loading (supports safetensors and pytorch_model.bin)
+# ─────────────────────────────────────────────────────────────────────────────
+DTYPE_MAP = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
 
-    # Skip optimizer states if accidentally included.
-    if "optimizer" in k or "scheduler" in k:
-        return None
 
-    # ── Timestep embedding ────────────────────────────────────────────────
-    if k.startswith("time_embed."):
-        return k  # same naming
+def load_hf_checkpoint(input_dir: Path) -> Dict[str, torch.Tensor]:
+    """Load tensors from safetensors shards or pytorch_model.bin."""
+    from safetensors.torch import load_file
 
-    # ── Vision projection ─────────────────────────────────────────────────
-    if k.startswith("vision_proj."):
-        return k
+    # Try safetensors first.
+    shards = sorted(input_dir.glob("*.safetensors"))
+    if shards:
+        tensors = {}
+        for shard in shards:
+            print(f"  Loading {shard.name}")
+            tensors.update(load_file(str(shard), device="cpu"))
+        print(f"  Loaded {len(tensors)} tensors from {len(shards)} safetensors shard(s).")
+        return tensors
 
-    # ── Language projection ───────────────────────────────────────────────
-    if k.startswith("lang_proj."):
-        return k
+    # Fallback: pytorch_model.bin (single or sharded).
+    bin_files = sorted(input_dir.glob("pytorch_model*.bin"))
+    if bin_files:
+        tensors = {}
+        for bf in bin_files:
+            print(f"  Loading {bf.name}")
+            tensors.update(torch.load(str(bf), map_location="cpu"))
+        print(f"  Loaded {len(tensors)} tensors from {len(bin_files)} .bin file(s).")
+        return tensors
 
-    # ── Action input projection ───────────────────────────────────────────
-    if k in ("action_proj.weight", "action_proj.bias",
-             "action_in.weight",   "action_in.bias"):
-        return k.replace("action_proj.", "action_in_proj.") \
-                 .replace("action_in.", "action_in_proj.")
+    raise FileNotFoundError(
+        f"No .safetensors or pytorch_model*.bin files found in {input_dir}"
+    )
 
-    # ── State tokeniser ───────────────────────────────────────────────────
-    if k.startswith("state_tok.") or k.startswith("state_token."):
-        return k.replace("state_token.", "state_tok.")
 
-    # ── DiT blocks ────────────────────────────────────────────────────────
-    # HF: model.blocks.{i}.{...}  →  SF: dit.blocks.{i}.{...}
-    if k.startswith("model.blocks.") or k.startswith("dit_model.blocks."):
-        return k.replace("model.blocks.", "dit.blocks.") \
-                 .replace("dit_model.blocks.", "dit.blocks.")
+def download_hf_model(model_id: str, cache_dir: Optional[str] = None) -> Path:
+    """Download a HuggingFace model to a local directory and return the path."""
+    from huggingface_hub import snapshot_download
 
-    # Already in SF format.
-    if k.startswith("dit.blocks."):
-        return k
-
-    # ── Final layer ───────────────────────────────────────────────────────
-    if k.startswith("final_layer."):
-        return k
-
-    # ── Action normalisation ──────────────────────────────────────────────
-    if k.startswith("action_norm."):
-        return k
-
-    # Unknown key — keep as-is and let the loader warn about unrecognised weights.
-    return k
+    print(f"  Downloading {model_id} from HuggingFace Hub...")
+    local_dir = snapshot_download(
+        model_id,
+        local_dir=cache_dir,
+        ignore_patterns=["*.msgpack", "*.h5", "flax_model*",
+                         "tf_model*", "rust_model*"],
+    )
+    return Path(local_dir)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Conversion
 # ─────────────────────────────────────────────────────────────────────────────
-DTYPE_MAP = {
-    "fp32":    torch.float32,
-    "fp16":    torch.float16,
-    "bf16":    torch.bfloat16,
-}
-
-
-def load_hf_checkpoint(input_dir: Path) -> Dict[str, torch.Tensor]:
-    """Load all safetensors shards from a HuggingFace checkpoint directory."""
-    shards = sorted(input_dir.glob("*.safetensors"))
-    if not shards:
-        raise FileNotFoundError(f"No .safetensors files found in {input_dir}")
-
-    tensors = {}
-    for shard in shards:
-        print(f"  Loading shard: {shard.name}")
-        tensors.update(load_file(str(shard), device="cpu"))
-
-    print(f"  Loaded {len(tensors)} tensors from {len(shards)} shard(s).")
-    return tensors
-
-
-def convert(input_dir: Path, output_dir: Path, dtype: torch.dtype,
+def convert(input_path: str, output_dir: Path, dtype: torch.dtype,
             max_shard_gb: float = 4.0) -> None:
+    from safetensors.torch import save_file
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n[1/4] Loading HuggingFace checkpoint from: {input_dir}")
+    # ── Resolve input ─────────────────────────────────────────────────────
+    input_dir = Path(input_path)
+    if not input_dir.is_dir():
+        # Assume it's a HuggingFace hub model id.
+        print(f"\n[0/5] Downloading model from HuggingFace Hub: {input_path}")
+        input_dir = download_hf_model(input_path)
+
+    print(f"\n[1/5] Loading HuggingFace checkpoint from: {input_dir}")
     hf_tensors = load_hf_checkpoint(input_dir)
 
-    print(f"\n[2/4] Remapping weight keys...")
-    key_map = build_key_map(list(hf_tensors.keys()))
+    print(f"\n[2/5] Remapping weight keys...")
+    key_map = remap_all(list(hf_tensors.keys()))
     skipped = [k for k in hf_tensors if k not in key_map]
-    if skipped:
-        print(f"  Skipped {len(skipped)} tensors (T5 encoder / unknown):")
-        for k in skipped[:5]:
-            print(f"    {k}")
-        if len(skipped) > 5:
-            print(f"    ... and {len(skipped) - 5} more")
+    print(f"  Mapped:  {len(key_map)} tensors")
+    print(f"  Skipped: {len(skipped)} tensors")
+    for k in skipped[:5]:
+        print(f"    skip: {k}")
+    if len(skipped) > 5:
+        print(f"    ... and {len(skipped) - 5} more")
 
-    print(f"\n[3/4] Casting to {dtype} and saving...")
+    # Print a sample of the mapped keys for verification.
+    print("\n  Sample key mappings:")
+    for hf_k, sf_k in list(key_map.items())[:10]:
+        print(f"    {hf_k:60s} → {sf_k}")
+
+    print(f"\n[3/5] Casting to {dtype} ...")
     sf_tensors: Dict[str, torch.Tensor] = {}
     for hf_key, sf_key in key_map.items():
         t = hf_tensors[hf_key]
-        # Keep action normalisation in fp32 for numerical precision.
+        # Keep action normalisation statistics in fp32 for precision.
         target = torch.float32 if sf_key.startswith("action_norm.") else dtype
         sf_tensors[sf_key] = t.to(target).contiguous()
 
-    # Shard output if total size exceeds max_shard_gb.
-    total_bytes = sum(t.nbytes() for t in sf_tensors.values())
+    print(f"\n[4/5] Writing safetensors checkpoint(s)...")
+    total_bytes = sum(t.nbytes for t in sf_tensors.values())
     max_bytes   = int(max_shard_gb * 1024 ** 3)
 
     if total_bytes <= max_bytes:
@@ -166,27 +178,22 @@ def convert(input_dir: Path, output_dir: Path, dtype: torch.dtype,
         print(f"  Writing {out_path.name}  ({total_bytes / 1024**3:.2f} GB)")
         save_file(sf_tensors, str(out_path))
     else:
-        # Split into shards.
-        shard_idx   = 1
-        current     = {}
-        current_sz  = 0
-
+        shard_idx  = 1
+        current    = {}
+        current_sz = 0
         for name, tensor in sf_tensors.items():
-            if current_sz + tensor.nbytes() > max_bytes and current:
+            if current_sz + tensor.nbytes > max_bytes and current:
                 fname = output_dir / f"model-{shard_idx:05d}-of-XXXXX.safetensors"
                 print(f"  Writing shard {shard_idx}  ({current_sz / 1024**3:.2f} GB)")
                 save_file(current, str(fname))
                 shard_idx += 1
-                current   = {}
+                current    = {}
                 current_sz = 0
             current[name]  = tensor
-            current_sz    += tensor.nbytes()
-
+            current_sz    += tensor.nbytes
         if current:
             fname = output_dir / f"model-{shard_idx:05d}-of-XXXXX.safetensors"
             save_file(current, str(fname))
-
-        # Rename shards to include total count.
         total_shards = shard_idx
         for i, old in enumerate(
             sorted(output_dir.glob("model-*-of-XXXXX.safetensors")), 1
@@ -194,61 +201,76 @@ def convert(input_dir: Path, output_dir: Path, dtype: torch.dtype,
             new = output_dir / f"model-{i:05d}-of-{total_shards:05d}.safetensors"
             old.rename(new)
 
-    print(f"\n[4/4] Writing config.json...")
-    _write_config(input_dir, output_dir, dtype)
+    print(f"\n[5/5] Writing config.json...")
+    write_servoflow_config(input_dir, output_dir, dtype)
 
     print(f"\nDone. ServoFlow checkpoint written to: {output_dir}")
-    print(f"Total size: {total_bytes / 1024**3:.2f} GB  ({dtype})")
+    print(f"Total weight size: {total_bytes / 1024**3:.2f} GB  ({dtype})")
+    print("\nVerification keys present:")
+    required = [
+        "t_embedder.mlp.0.weight",
+        "blocks.0.norm1.weight",
+        "blocks.0.attn.qkv.weight",
+        "blocks.0.cross_attn.q.weight",
+        "blocks.0.ffn.fc1.weight",
+        "final_layer.norm_final.weight",
+        "lang_adaptor.0.weight",
+        "x_pos_embed",
+    ]
+    for k in required:
+        present = k in sf_tensors
+        shape   = tuple(sf_tensors[k].shape) if present else "MISSING"
+        print(f"  {'✓' if present else '✗'} {k}: {shape}")
 
 
-def _write_config(input_dir: Path, output_dir: Path, dtype: torch.dtype) -> None:
-    """Write ServoFlow config.json, adapting from HF config.json if available."""
+def write_servoflow_config(input_dir: Path, output_dir: Path,
+                            dtype: torch.dtype) -> None:
+    """Write ServoFlow config.json, adapting from HuggingFace config.json."""
+    hf_cfg = {}
     hf_cfg_path = input_dir / "config.json"
-    sf_cfg: dict = {}
-
     if hf_cfg_path.exists():
         with open(hf_cfg_path) as f:
             hf_cfg = json.load(f)
-        # Translate common HF field names.
-        field_map = {
-            "hidden_size":           "hidden_size",
-            "num_hidden_layers":     "num_hidden_layers",
-            "num_attention_heads":   "num_attention_heads",
-            "intermediate_size":     None,  # we use mlp_ratio
-            "action_dim":            "action_dim",
-            "action_horizon":        "action_horizon",
-            "num_cameras":           "num_cameras",
-            "lang_max_tokens":       "lang_max_tokens",
-            "vision_embed_dim":      "vision_embed_dim",
-            "num_image_tokens":      "num_image_tokens",
-        }
-        for hf_k, sf_k in field_map.items():
-            if sf_k and hf_k in hf_cfg:
-                sf_cfg[sf_k] = hf_cfg[hf_k]
 
-    # Add ServoFlow-specific fields.
-    sf_cfg.setdefault("hidden_size",         2048)
-    sf_cfg.setdefault("num_hidden_layers",   24)
-    sf_cfg.setdefault("num_attention_heads", 32)
-    sf_cfg.setdefault("mlp_ratio",           4.0)
-    sf_cfg.setdefault("action_dim",          128)
-    sf_cfg.setdefault("action_horizon",      64)
-    sf_cfg.setdefault("freq_dim",            256)
-    sf_cfg.setdefault("vision_embed_dim",    1152)
-    sf_cfg.setdefault("num_image_tokens",    729)
-    sf_cfg.setdefault("num_cameras",         2)
-    sf_cfg.setdefault("lang_max_tokens",     128)
-    sf_cfg.setdefault("state_dim",           128)
-    sf_cfg.setdefault("layer_norm_eps",      1e-6)
-    sf_cfg["servoflow_version"] = "0.1.0"
-    sf_cfg["compute_dtype"] = {
-        torch.float32: "float32",
-        torch.float16: "float16",
-        torch.bfloat16: "bfloat16",
-    }[dtype]
+    # Build ServoFlow config from HF fields.
+    rdt = hf_cfg.get("rdt", {})
+    ns  = hf_cfg.get("noise_scheduler", {})
+
+    sf_cfg = {
+        # RDT backbone.
+        "hidden_size":          rdt.get("hidden_size",   2048),
+        "num_hidden_layers":    rdt.get("depth",         28),
+        "num_attention_heads":  rdt.get("num_heads",     32),
+        # Architecture: no mlp expansion in RDT-1B (1× hidden).
+        "mlp_ratio":            1.0,
+        # Action / robot.
+        "action_dim":           hf_cfg.get("action_dim",    128),
+        "pred_horizon":         hf_cfg.get("pred_horizon",  64),
+        # Condition tokens.
+        "img_cond_len":         hf_cfg.get("img_cond_len",  4374),
+        "img_token_dim":        hf_cfg.get("img_token_dim", 1152),
+        "lang_token_dim":       hf_cfg.get("lang_token_dim", 4096),
+        "max_lang_cond_len":    hf_cfg.get("max_lang_cond_len", 1024),
+        "state_token_dim":      hf_cfg.get("state_token_dim",   128),
+        # DDPM.
+        "num_train_timesteps":     ns.get("num_train_timesteps",     1000),
+        "num_inference_timesteps": ns.get("num_inference_timesteps", 5),
+        # Normalisation.
+        "rms_norm_eps":         1e-6,
+        "freq_dim":             256,
+        # Compute.
+        "compute_dtype": {
+            torch.float32: "float32",
+            torch.float16: "float16",
+            torch.bfloat16: "bfloat16",
+        }[dtype],
+        "servoflow_version": "0.2.0",
+    }
 
     with open(output_dir / "config.json", "w") as f:
         json.dump(sf_cfg, f, indent=2)
+    print(f"  Wrote config.json: depth={sf_cfg['num_hidden_layers']}, "
+          f"hidden={sf_cfg['hidden_size']}, heads={sf_cfg['num_attention_heads']}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -258,19 +280,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert HuggingFace RDT-1B checkpoint to ServoFlow format."
     )
-    parser.add_argument("--input",  required=True,
-                        help="Path to the HuggingFace checkpoint directory.")
+    parser.add_argument(
+        "--input", required=True,
+        help="Local HF checkpoint directory or HuggingFace model id "
+             "(e.g. 'robotics-diffusion-transformer/rdt-1b')."
+    )
     parser.add_argument("--output", required=True,
-                        help="Path to the output ServoFlow checkpoint directory.")
-    parser.add_argument("--dtype",  default="fp16",
-                        choices=["fp32", "fp16", "bf16"],
-                        help="Target weight dtype (default: fp16).")
-    parser.add_argument("--max-shard-gb", type=float, default=4.0,
-                        help="Maximum size of each output shard in GB (default: 4).")
+                        help="Output ServoFlow checkpoint directory.")
+    parser.add_argument("--dtype", default="fp16",
+                        choices=["fp32", "fp16", "bf16"])
+    parser.add_argument("--max-shard-gb", type=float, default=4.0)
     args = parser.parse_args()
 
-    dtype = DTYPE_MAP[args.dtype]
-    convert(Path(args.input), Path(args.output), dtype, args.max_shard_gb)
+    convert(args.input, Path(args.output), DTYPE_MAP[args.dtype], args.max_shard_gb)
 
 
 if __name__ == "__main__":

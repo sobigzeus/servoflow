@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "servoflow/models/rdt1b/dit_block.h"
-
 #include "backend/cuda/ops/split_ops.cuh"
 
 #include <cmath>
@@ -8,27 +7,24 @@
 #include <stdexcept>
 #include <vector>
 
-using namespace sf::cuda_ops;
-
 namespace sf {
 namespace rdt1b {
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Utility: load a named weight, cast to target dtype, move to device.
+// Utility: load a named weight from the WeightMap, cast to target dtype,
+// and upload to device if needed.
 // ─────────────────────────────────────────────────────────────────────────────
 static Tensor load_weight(const WeightMap& weights, const std::string& key,
-                          DType target_dtype, BackendPtr backend,
-                          StreamHandle stream) {
+                           DType target_dtype, BackendPtr backend,
+                           StreamHandle stream) {
     auto it = weights.find(key);
     if (it == weights.end())
-        throw std::runtime_error("Missing weight: " + key);
+        throw std::runtime_error("Missing weight key: " + key);
 
     const Tensor& src = it->second;
-    // Allocate on device.
     Tensor dst = backend->alloc(src.shape(), target_dtype, stream);
 
     if (src.device().is_cpu()) {
-        // Upload: H2D copy, then cast if needed.
         if (src.dtype() == target_dtype) {
             backend->copy(dst, src, stream);
         } else {
@@ -37,375 +33,346 @@ static Tensor load_weight(const WeightMap& weights, const std::string& key,
             backend->cast(tmp, dst, stream);
         }
     } else {
-        if (src.dtype() == target_dtype) {
+        if (src.dtype() == target_dtype)
             backend->copy(dst, src, stream);
-        } else {
+        else
             backend->cast(src, dst, stream);
-        }
     }
     return dst;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TimestepEmbedding
+//
+// Exact match of PyTorch implementation in blocks.py:
+//
+//   def timestep_embedding(t, dim, max_period=10000):
+//       half = dim // 2
+//       freqs = exp(-log(max_period) * arange(0, half) / half)
+//       args  = t[:, None].float() * freqs[None]
+//       embedding = cat([cos(args), sin(args)], dim=-1)
+//       return embedding
+//
+//   MLP: sinusoidal → Linear(freq_dim, hidden_dim) → SiLU → Linear(hidden_dim, hidden_dim)
 // ─────────────────────────────────────────────────────────────────────────────
 void TimestepEmbedding::build_sincos_table(BackendPtr backend,
                                             StreamHandle stream) {
-    // Pre-compute sinusoidal embeddings for t in [0, 1] mapped to 1000 steps.
-    // The table has shape [1000, freq_dim]; at inference we pick the row
-    // corresponding to round(t * 999).
-    constexpr int kMaxSteps = 1000;
-    std::vector<float> table(kMaxSteps * freq_dim_);
-    float max_period = 10000.f;
+    std::vector<float> table(max_timesteps_ * freq_dim_);
+    const float max_period = 10000.f;
+    const int   half       = freq_dim_ / 2;
 
-    for (int step = 0; step < kMaxSteps; ++step) {
+    for (int step = 0; step < max_timesteps_; ++step) {
         float t = static_cast<float>(step);
-        for (int i = 0; i < freq_dim_ / 2; ++i) {
-            float freq = std::exp(-std::log(max_period)
-                                  * i / (freq_dim_ / 2 - 1));
+        for (int i = 0; i < half; ++i) {
+            float freq  = std::exp(-std::log(max_period) * i / static_cast<float>(half));
             float angle = t * freq;
-            table[step * freq_dim_ + i]                 = std::cos(angle);
-            table[step * freq_dim_ + freq_dim_ / 2 + i] = std::sin(angle);
+            table[step * freq_dim_ + i]        = std::cos(angle);
+            table[step * freq_dim_ + half + i] = std::sin(angle);
         }
     }
 
-    // Upload to device.
     Tensor cpu_table = backend->alloc_pinned(
-        Shape({kMaxSteps, freq_dim_}), DType::Float32);
+        Shape({max_timesteps_, freq_dim_}), DType::Float32);
     std::memcpy(cpu_table.raw_data_ptr(), table.data(),
                 table.size() * sizeof(float));
 
     sincos_table_ = backend->alloc(
-        Shape({kMaxSteps, freq_dim_}), DType::Float32, stream);
+        Shape({max_timesteps_, freq_dim_}), DType::Float32, stream);
     backend->copy(sincos_table_, cpu_table, stream);
 }
 
 void TimestepEmbedding::load(const WeightMap& weights,
-                              const std::string& prefix,
-                              const RDT1BConfig& cfg,
-                              BackendPtr backend, StreamHandle stream) {
-    freq_dim_  = cfg.freq_dim;
-    embed_dim_ = cfg.time_embed_dim;
-    DType dt   = cfg.compute_dtype;
+                               const std::string& prefix,
+                               const RDT1BConfig& cfg,
+                               BackendPtr backend, StreamHandle stream) {
+    freq_dim_      = cfg.freq_dim;
+    embed_dim_     = cfg.time_embed_dim;
+    max_timesteps_ = cfg.num_train_timesteps;
+    DType dt       = cfg.compute_dtype;
 
-    linear1_weight_ = load_weight(weights, prefix + "linear1.weight", dt, backend, stream);
-    linear1_bias_   = load_weight(weights, prefix + "linear1.bias",   dt, backend, stream);
-    linear2_weight_ = load_weight(weights, prefix + "linear2.weight", dt, backend, stream);
-    linear2_bias_   = load_weight(weights, prefix + "linear2.bias",   dt, backend, stream);
+    // HF weight names: prefix + "mlp.0.weight/bias" and "mlp.2.weight/bias"
+    mlp0_weight_ = load_weight(weights, prefix + "mlp.0.weight", dt, backend, stream);
+    mlp0_bias_   = load_weight(weights, prefix + "mlp.0.bias",   dt, backend, stream);
+    mlp2_weight_ = load_weight(weights, prefix + "mlp.2.weight", dt, backend, stream);
+    mlp2_bias_   = load_weight(weights, prefix + "mlp.2.bias",   dt, backend, stream);
 
     build_sincos_table(backend, stream);
 }
 
-Tensor TimestepEmbedding::forward(float t, BackendPtr backend,
+Tensor TimestepEmbedding::forward(int64_t t, BackendPtr backend,
                                    StreamHandle stream) const {
-    // Pick sinusoidal row: row = round(t * 999).
-    int row = static_cast<int>(std::round(t * 999.f));
-    row     = std::max(0, std::min(999, row));
+    // Clamp to valid range.
+    t = std::max(int64_t(0), std::min(t, max_timesteps_ - 1));
 
-    // Slice [row, :] → [1, freq_dim]
-    Tensor sincos = sincos_table_.slice(row, row + 1);  // [1, freq_dim]
+    // Slice sinusoidal row: [1, freq_dim]
+    Tensor sincos_row = sincos_table_.slice(t, t + 1);  // [1, freq_dim]
 
-    // Cast to compute dtype for GEMM.
-    DType dt = linear1_weight_.dtype();
+    DType dt   = mlp0_weight_.dtype();
     Tensor emb = backend->alloc(Shape({1, freq_dim_}), dt, stream);
-    backend->cast(sincos, emb, stream);
+    backend->cast(sincos_row, emb, stream);
 
-    // Linear1: [1, freq_dim] × [freq_dim, embed_dim] → [1, embed_dim]
+    // Linear1: [1, freq_dim] × [hidden_dim, freq_dim]^T → [1, hidden_dim]
     Tensor h = backend->alloc(Shape({1, embed_dim_}), dt, stream);
-    backend->gemm(emb, linear1_weight_, h,
-                  1.f, 0.f, false, true, stream);
-    backend->add(h, linear1_bias_.view({1, embed_dim_}), h, stream);
+    backend->gemm(emb, mlp0_weight_, h, 1.f, 0.f, false, true, stream);
+    backend->add(h, mlp0_bias_.view({1, embed_dim_}), h, stream);
     backend->silu(h, h, stream);
 
-    // Linear2: [1, embed_dim] × [embed_dim, embed_dim] → [1, embed_dim]
+    // Linear2: [1, hidden_dim] × [hidden_dim, hidden_dim]^T → [1, hidden_dim]
     Tensor out = backend->alloc(Shape({1, embed_dim_}), dt, stream);
-    backend->gemm(h, linear2_weight_, out,
-                  1.f, 0.f, false, true, stream);
-    backend->add(out, linear2_bias_.view({1, embed_dim_}), out, stream);
+    backend->gemm(h, mlp2_weight_, out, 1.f, 0.f, false, true, stream);
+    backend->add(out, mlp2_bias_.view({1, embed_dim_}), out, stream);
 
-    return out;  // [1, embed_dim]
+    return out;  // [1, hidden_dim]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AdaLNModulation
+// Mlp — timm's Mlp, 1× hidden, GELU(tanh approx)
 // ─────────────────────────────────────────────────────────────────────────────
-void AdaLNModulation::load(const WeightMap& weights,
-                            const std::string& prefix,
-                            const RDT1BConfig& cfg,
-                            BackendPtr backend, StreamHandle stream) {
-    hidden_dim_ = cfg.hidden_dim;
-    DType dt    = cfg.compute_dtype;
-
-    linear_weight_ = load_weight(weights, prefix + "linear.weight", dt, backend, stream);
-    linear_bias_   = load_weight(weights, prefix + "linear.bias",   dt, backend, stream);
+void Mlp::load(const WeightMap& weights, const std::string& prefix,
+                int64_t in_dim, int64_t out_dim, DType dt,
+                BackendPtr backend, StreamHandle stream) {
+    in_dim_     = in_dim;
+    out_dim_    = out_dim;
+    fc1_weight_ = load_weight(weights, prefix + "fc1.weight", dt, backend, stream);
+    fc1_bias_   = load_weight(weights, prefix + "fc1.bias",   dt, backend, stream);
+    fc2_weight_ = load_weight(weights, prefix + "fc2.weight", dt, backend, stream);
+    fc2_bias_   = load_weight(weights, prefix + "fc2.bias",   dt, backend, stream);
 }
 
-AdaLNModulation::Params AdaLNModulation::forward(const Tensor& c,
-                                                   BackendPtr backend,
-                                                   StreamHandle stream) const {
-    DType dt = c.dtype();
-    int64_t B = c.shape()[0];
+Tensor Mlp::forward(const Tensor& x, BackendPtr backend,
+                     StreamHandle stream) const {
+    DType   dt  = x.dtype();
+    int64_t B   = x.shape()[0];
+    int64_t S   = x.shape()[1];
 
-    // SiLU(c): [B, time_embed_dim]
-    Tensor act = backend->alloc(c.shape(), dt, stream);
-    backend->silu(c, act, stream);
+    // fc1: [B*S, in_dim] → [B*S, in_dim]
+    Tensor x_2d = x.view({B * S, in_dim_});
+    Tensor h    = backend->alloc(Shape({B * S, in_dim_}), dt, stream);
+    backend->gemm(x_2d, fc1_weight_, h, 1.f, 0.f, false, true, stream);
+    backend->add(h, fc1_bias_.view({1, in_dim_}), h, stream);
+    backend->gelu(h, h, stream);  // GELU with tanh approximation
 
-    // Linear: [B, time_embed_dim] → [B, 2*hidden_dim]
-    Tensor proj = backend->alloc(Shape({B, 2 * hidden_dim_}), dt, stream);
-    backend->gemm(act, linear_weight_, proj,
-                  1.f, 0.f, false, true, stream);
-    backend->add(proj, linear_bias_.view({1, 2 * hidden_dim_}), proj, stream);
+    // fc2: [B*S, in_dim] → [B*S, out_dim]
+    Tensor out_2d = backend->alloc(Shape({B * S, out_dim_}), dt, stream);
+    backend->gemm(h, fc2_weight_, out_2d, 1.f, 0.f, false, true, stream);
+    backend->add(out_2d, fc2_bias_.view({1, out_dim_}), out_2d, stream);
 
-    // Split into scale and shift, each [B, hidden_dim].
-    Tensor scale = proj.slice(0, B);   // uses view into same storage
-    // We need actual separate slices along dim 1; use view + offset arithmetic.
-    // Since split is along the last dim, we do it via view + manual slice.
-    // TODO: implement a proper dim-1 split in the backend.
-    // For now, allocate and copy each half.
-    Tensor scale_out = backend->alloc(Shape({B, hidden_dim_}), dt, stream);
-    Tensor shift_out = backend->alloc(Shape({B, hidden_dim_}), dt, stream);
-
-    // Copy first hidden_dim columns to scale, second to shift.
-    // This is a strided copy; backend::cat in reverse, or a custom kernel.
-    // We express it as two GEMM with identity slices using an eye matrix,
-    // but that's expensive. Instead, we rely on the split_last_dim helper
-    // which we implement as a dedicated elementwise copy kernel.
-    split_last_dim(proj, scale_out, shift_out, backend, stream);
-
-    return {scale_out, shift_out};
+    return out_2d.view({B, S, out_dim_});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FeedForward (SwiGLU)
+// SelfAttention (timm Attention with qkv_bias=True, qk_norm=True)
 // ─────────────────────────────────────────────────────────────────────────────
-void FeedForward::load(const WeightMap& weights, const std::string& prefix,
-                        const RDT1BConfig& cfg,
-                        BackendPtr backend, StreamHandle stream) {
-    hidden_dim_ = cfg.hidden_dim;
-    ffn_dim_    = cfg.ffn_dim();
-    DType dt    = cfg.compute_dtype;
-
-    gate_up_weight_ = load_weight(weights, prefix + "gate_up_proj.weight",
-                                  dt, backend, stream);
-    gate_up_bias_   = load_weight(weights, prefix + "gate_up_proj.bias",
-                                  dt, backend, stream);
-    down_weight_    = load_weight(weights, prefix + "down_proj.weight",
-                                  dt, backend, stream);
-    down_bias_      = load_weight(weights, prefix + "down_proj.bias",
-                                  dt, backend, stream);
-}
-
-void FeedForward::forward(const Tensor& x, Tensor& out,
-                           BackendPtr backend, StreamHandle stream) const {
-    DType   dt = x.dtype();
-    int64_t B  = x.shape()[0];
-    int64_t S  = x.shape()[1];
-
-    // gate_up = x @ gate_up_weight^T  → [B*S, 2*ffn_dim]
-    Tensor x_2d       = x.view({B * S, hidden_dim_});
-    Tensor gate_up    = backend->alloc(Shape({B * S, 2 * ffn_dim_}), dt, stream);
-    backend->gemm(x_2d, gate_up_weight_, gate_up,
-                  1.f, 0.f, false, true, stream);
-    backend->add(gate_up,
-                 gate_up_bias_.view({1, 2 * ffn_dim_}),
-                 gate_up, stream);
-
-    // Split gate and up: each [B*S, ffn_dim].
-    Tensor gate = backend->alloc(Shape({B * S, ffn_dim_}), dt, stream);
-    Tensor up   = backend->alloc(Shape({B * S, ffn_dim_}), dt, stream);
-    split_last_dim(gate_up, gate, up, backend, stream);
-
-    // SwiGLU: out_ffn = SiLU(gate) * up
-    backend->silu(gate, gate, stream);
-    backend->mul(gate, up, gate, stream);  // reuse gate buffer
-
-    // down = gate @ down_weight^T  → [B*S, hidden_dim]
-    Tensor out_2d = backend->alloc(Shape({B * S, hidden_dim_}), dt, stream);
-    backend->gemm(gate, down_weight_, out_2d,
-                  1.f, 0.f, false, true, stream);
-    backend->add(out_2d,
-                 down_bias_.view({1, hidden_dim_}),
-                 out_2d, stream);
-
-    out = out_2d.view({B, S, hidden_dim_});
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MultiHeadAttention
-// ─────────────────────────────────────────────────────────────────────────────
-void MultiHeadAttention::load(const WeightMap& weights,
-                               const std::string& prefix,
-                               const RDT1BConfig& cfg, bool cross_attn,
-                               BackendPtr backend, StreamHandle stream) {
+void SelfAttention::load(const WeightMap& weights, const std::string& prefix,
+                          const RDT1BConfig& cfg,
+                          BackendPtr backend, StreamHandle stream) {
     hidden_dim_ = cfg.hidden_dim;
     num_heads_  = cfg.num_heads;
     head_dim_   = cfg.head_dim;
-    cross_attn_ = cross_attn;
+    norm_eps_   = cfg.rms_norm_eps;
     DType dt    = cfg.compute_dtype;
 
-    if (!cross_attn_) {
-        qkv_weight_ = load_weight(weights, prefix + "qkv.weight",
-                                  dt, backend, stream);
-        qkv_bias_   = load_weight(weights, prefix + "qkv.bias",
-                                  dt, backend, stream);
-    } else {
-        q_weight_  = load_weight(weights, prefix + "q.weight",  dt, backend, stream);
-        q_bias_    = load_weight(weights, prefix + "q.bias",    dt, backend, stream);
-        kv_weight_ = load_weight(weights, prefix + "kv.weight", dt, backend, stream);
-        kv_bias_   = load_weight(weights, prefix + "kv.bias",   dt, backend, stream);
-    }
-
-    out_weight_ = load_weight(weights, prefix + "proj.weight", dt, backend, stream);
-    out_bias_   = load_weight(weights, prefix + "proj.bias",   dt, backend, stream);
+    qkv_weight_    = load_weight(weights, prefix + "qkv.weight",    dt, backend, stream);
+    qkv_bias_      = load_weight(weights, prefix + "qkv.bias",      dt, backend, stream);
+    q_norm_weight_ = load_weight(weights, prefix + "q_norm.weight", dt, backend, stream);
+    k_norm_weight_ = load_weight(weights, prefix + "k_norm.weight", dt, backend, stream);
+    proj_weight_   = load_weight(weights, prefix + "proj.weight",   dt, backend, stream);
+    proj_bias_     = load_weight(weights, prefix + "proj.bias",     dt, backend, stream);
 }
 
-void MultiHeadAttention::split_qkv(const Tensor& qkv,
-                                    Tensor& Q, Tensor& K, Tensor& V,
-                                    BackendPtr backend, StreamHandle stream) const {
-    // qkv: [B, S, 3*H*head_dim]
-    int64_t B = qkv.shape()[0];
-    int64_t S = qkv.shape()[1];
-    DType dt  = qkv.dtype();
+void SelfAttention::apply_qk_norm(Tensor& qk, const Tensor& weight,
+                                   BackendPtr backend, StreamHandle stream) const {
+    // qk: [B, H, S, head_dim] → reshape to [B*H*S, head_dim] → rms_norm → reshape back
+    int64_t B = qk.shape()[0];
+    int64_t H = qk.shape()[1];
+    int64_t S = qk.shape()[2];
 
-    Q = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
-    K = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
-    V = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
-
-    split_qkv_kernel(qkv, Q, K, V, num_heads_, head_dim_, backend, stream);
+    Tensor flat = qk.view({B * H * S, head_dim_});
+    Tensor out  = backend->alloc(flat.shape(), flat.dtype(), stream);
+    backend->rms_norm(flat, weight, out, norm_eps_, stream);
+    qk = out.view({B, H, S, head_dim_});
 }
 
-void MultiHeadAttention::forward(const Tensor& x, Tensor& out,
-                                  bool is_causal,
-                                  BackendPtr backend, StreamHandle stream) const {
+Tensor SelfAttention::forward(const Tensor& x, BackendPtr backend,
+                               StreamHandle stream) const {
     DType   dt = x.dtype();
     int64_t B  = x.shape()[0];
     int64_t S  = x.shape()[1];
 
-    // Project to QKV: [B, S, hidden] → [B, S, 3*hidden]
-    Tensor x_2d  = x.view({B * S, hidden_dim_});
+    // QKV projection: [B*S, D] → [B*S, 3D]
+    Tensor x_2d   = x.view({B * S, hidden_dim_});
     Tensor qkv_2d = backend->alloc(Shape({B * S, 3 * hidden_dim_}), dt, stream);
     backend->gemm(x_2d, qkv_weight_, qkv_2d, 1.f, 0.f, false, true, stream);
-    backend->add(qkv_2d,
-                 qkv_bias_.view({1, 3 * hidden_dim_}),
-                 qkv_2d, stream);
+    backend->add(qkv_2d, qkv_bias_.view({1, 3 * hidden_dim_}), qkv_2d, stream);
 
+    // Split QKV: [B, S, 3D] → three [B, H, S, head_dim]
     Tensor qkv = qkv_2d.view({B, S, 3 * hidden_dim_});
-    Tensor Q, K, V;
-    split_qkv(qkv, Q, K, V, backend, stream);
+    Tensor Q = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
+    Tensor K = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
+    Tensor V = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
+    cuda_ops::split_qkv_kernel(qkv, Q, K, V, num_heads_, head_dim_, backend, stream);
+
+    // qk_norm: per-head RmsNorm
+    apply_qk_norm(Q, q_norm_weight_, backend, stream);
+    apply_qk_norm(K, k_norm_weight_, backend, stream);
 
     // FlashAttention: [B, H, S, D] → [B, H, S, D]
     Tensor attn_out = backend->alloc(Shape({B, num_heads_, S, head_dim_}), dt, stream);
-    backend->attention(Q, K, V, attn_out, nullptr, 0.f, is_causal, stream);
+    backend->attention(Q, K, V, attn_out, nullptr, 0.f, /*is_causal=*/false, stream);
 
-    // Reshape [B, H, S, D] → [B, S, H*D] and project out.
-    Tensor attn_2d = attn_out.view({B * S, hidden_dim_});
+    // Convert attention output [B, H, S, D] → [B, S, H*D] for projection GEMM.
+    Tensor attn_seq = backend->alloc(Shape({B, S, hidden_dim_}), dt, stream);
+    cuda_ops::head_to_seq(attn_out, attn_seq, num_heads_, head_dim_, backend, stream);
+
+    // Output projection: [B*S, D] → [B*S, D]
+    Tensor attn_2d = attn_seq.view({B * S, hidden_dim_});
     Tensor out_2d  = backend->alloc(Shape({B * S, hidden_dim_}), dt, stream);
-    backend->gemm(attn_2d, out_weight_, out_2d, 1.f, 0.f, false, true, stream);
-    backend->add(out_2d,
-                 out_bias_.view({1, hidden_dim_}),
-                 out_2d, stream);
+    backend->gemm(attn_2d, proj_weight_, out_2d, 1.f, 0.f, false, true, stream);
+    backend->add(out_2d, proj_bias_.view({1, hidden_dim_}), out_2d, stream);
 
-    out = out_2d.view({B, S, hidden_dim_});
+    return out_2d.view({B, S, hidden_dim_});
 }
 
-void MultiHeadAttention::forward_cross(const Tensor& x, const Tensor& context,
-                                        Tensor& out,
-                                        BackendPtr backend,
-                                        StreamHandle stream) const {
+// ─────────────────────────────────────────────────────────────────────────────
+// CrossAttention
+// ─────────────────────────────────────────────────────────────────────────────
+void CrossAttention::load(const WeightMap& weights, const std::string& prefix,
+                           const RDT1BConfig& cfg,
+                           BackendPtr backend, StreamHandle stream) {
+    hidden_dim_ = cfg.hidden_dim;
+    num_heads_  = cfg.num_heads;
+    head_dim_   = cfg.head_dim;
+    norm_eps_   = cfg.rms_norm_eps;
+    DType dt    = cfg.compute_dtype;
+
+    q_weight_      = load_weight(weights, prefix + "q.weight",      dt, backend, stream);
+    q_bias_        = load_weight(weights, prefix + "q.bias",        dt, backend, stream);
+    kv_weight_     = load_weight(weights, prefix + "kv.weight",     dt, backend, stream);
+    kv_bias_       = load_weight(weights, prefix + "kv.bias",       dt, backend, stream);
+    q_norm_weight_ = load_weight(weights, prefix + "q_norm.weight", dt, backend, stream);
+    k_norm_weight_ = load_weight(weights, prefix + "k_norm.weight", dt, backend, stream);
+    proj_weight_   = load_weight(weights, prefix + "proj.weight",   dt, backend, stream);
+    proj_bias_     = load_weight(weights, prefix + "proj.bias",     dt, backend, stream);
+}
+
+void CrossAttention::apply_qk_norm(Tensor& qk, const Tensor& weight,
+                                    BackendPtr backend, StreamHandle stream) const {
+    int64_t B = qk.shape()[0];
+    int64_t H = qk.shape()[1];
+    int64_t S = qk.shape()[2];
+
+    Tensor flat = qk.view({B * H * S, head_dim_});
+    Tensor out  = backend->alloc(flat.shape(), flat.dtype(), stream);
+    backend->rms_norm(flat, weight, out, norm_eps_, stream);
+    qk = out.view({B, H, S, head_dim_});
+}
+
+Tensor CrossAttention::forward(const Tensor& x, const Tensor& c,
+                                BackendPtr backend, StreamHandle stream) const {
     DType   dt = x.dtype();
     int64_t B  = x.shape()[0];
     int64_t Sq = x.shape()[1];
-    int64_t Sk = context.shape()[1];
+    int64_t Sk = c.shape()[1];
 
-    // Q from x: [B*Sq, hidden] → [B*Sq, hidden]
-    Tensor x_2d   = x.view({B * Sq, hidden_dim_});
-    Tensor q_2d   = backend->alloc(Shape({B * Sq, hidden_dim_}), dt, stream);
+    // Q from x: [B*Sq, D] → [B*Sq, D]
+    Tensor x_2d  = x.view({B * Sq, hidden_dim_});
+    Tensor q_2d  = backend->alloc(Shape({B * Sq, hidden_dim_}), dt, stream);
     backend->gemm(x_2d, q_weight_, q_2d, 1.f, 0.f, false, true, stream);
     backend->add(q_2d, q_bias_.view({1, hidden_dim_}), q_2d, stream);
 
-    // K,V from context: [B*Sk, hidden] → [B*Sk, 2*hidden]
-    Tensor ctx_2d = context.view({B * Sk, hidden_dim_});
-    Tensor kv_2d  = backend->alloc(Shape({B * Sk, 2 * hidden_dim_}), dt, stream);
-    backend->gemm(ctx_2d, kv_weight_, kv_2d, 1.f, 0.f, false, true, stream);
+    // KV from c: [B*Sk, D] → [B*Sk, 2D]
+    Tensor c_2d  = c.view({B * Sk, hidden_dim_});
+    Tensor kv_2d = backend->alloc(Shape({B * Sk, 2 * hidden_dim_}), dt, stream);
+    backend->gemm(c_2d, kv_weight_, kv_2d, 1.f, 0.f, false, true, stream);
     backend->add(kv_2d, kv_bias_.view({1, 2 * hidden_dim_}), kv_2d, stream);
 
-    // Reshape to [B, H, S, D].
-    Tensor Q = q_2d.view({B, num_heads_, Sq, head_dim_});
+    // Convert Q: [B*Sq, D] seq-major → [B, H, Sq, D] head-major for attention.
+    Tensor Q_seq = q_2d.view({B, Sq, hidden_dim_});  // [B, Sq, H*D]
+    Tensor Q  = backend->alloc(Shape({B, num_heads_, Sq, head_dim_}), dt, stream);
+    cuda_ops::seq_to_head(Q_seq, Q, num_heads_, head_dim_, backend, stream);
+
+    // Convert KV: [B, Sk, 2*H*D] → K, V in [B, H, Sk, D] head-major.
     Tensor KV = kv_2d.view({B, Sk, 2 * hidden_dim_});
-    Tensor K = backend->alloc(Shape({B, num_heads_, Sk, head_dim_}), dt, stream);
-    Tensor V = backend->alloc(Shape({B, num_heads_, Sk, head_dim_}), dt, stream);
-    split_kv_kernel(KV, K, V, num_heads_, head_dim_, backend, stream);
+    Tensor K  = backend->alloc(Shape({B, num_heads_, Sk, head_dim_}), dt, stream);
+    Tensor V  = backend->alloc(Shape({B, num_heads_, Sk, head_dim_}), dt, stream);
+    cuda_ops::split_kv_kernel(KV, K, V, num_heads_, head_dim_, backend, stream);
 
+    // qk_norm (both now in head-major [B, H, S, D])
+    apply_qk_norm(Q, q_norm_weight_, backend, stream);
+    apply_qk_norm(K, k_norm_weight_, backend, stream);
+
+    // Attention: inputs/output [B, H, S, D]
     Tensor attn_out = backend->alloc(Shape({B, num_heads_, Sq, head_dim_}), dt, stream);
-    backend->attention(Q, K, V, attn_out, nullptr, 0.f, false, stream);
+    backend->attention(Q, K, V, attn_out, nullptr, 0.f, /*is_causal=*/false, stream);
 
-    Tensor attn_2d = attn_out.view({B * Sq, hidden_dim_});
+    // Convert attention output [B, H, Sq, D] → [B, Sq, H*D] seq-major.
+    Tensor attn_seq = backend->alloc(Shape({B, Sq, hidden_dim_}), dt, stream);
+    cuda_ops::head_to_seq(attn_out, attn_seq, num_heads_, head_dim_, backend, stream);
+
+    // Output projection: [B*Sq, D] → [B*Sq, D]
+    Tensor attn_2d = attn_seq.view({B * Sq, hidden_dim_});
     Tensor out_2d  = backend->alloc(Shape({B * Sq, hidden_dim_}), dt, stream);
-    backend->gemm(attn_2d, out_weight_, out_2d, 1.f, 0.f, false, true, stream);
-    backend->add(out_2d, out_bias_.view({1, hidden_dim_}), out_2d, stream);
+    backend->gemm(attn_2d, proj_weight_, out_2d, 1.f, 0.f, false, true, stream);
+    backend->add(out_2d, proj_bias_.view({1, hidden_dim_}), out_2d, stream);
 
-    out = out_2d.view({B, Sq, hidden_dim_});
+    return out_2d.view({B, Sq, hidden_dim_});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DiTBlock
+// RDTBlock
 // ─────────────────────────────────────────────────────────────────────────────
-void DiTBlock::load(const WeightMap& weights, const std::string& prefix,
+void RDTBlock::load(const WeightMap& weights, const std::string& prefix,
                      const RDT1BConfig& cfg,
                      BackendPtr backend, StreamHandle stream) {
     hidden_dim_ = cfg.hidden_dim;
-    norm_eps_   = cfg.layer_norm_eps;
+    norm_eps_   = cfg.rms_norm_eps;
     DType dt    = cfg.compute_dtype;
 
-    adaln_.load(weights, prefix + "adaLN_modulation.", cfg, backend, stream);
-    attn_ .load(weights, prefix + "attn.", cfg, /*cross_attn=*/false, backend, stream);
-    ffn_  .load(weights, prefix + "ffn.",  cfg, backend, stream);
-
+    // 3 RmsNorm layers (weight only, shape [hidden_dim])
     norm1_weight_ = load_weight(weights, prefix + "norm1.weight", dt, backend, stream);
-    norm1_bias_   = load_weight(weights, prefix + "norm1.bias",   dt, backend, stream);
     norm2_weight_ = load_weight(weights, prefix + "norm2.weight", dt, backend, stream);
-    norm2_bias_   = load_weight(weights, prefix + "norm2.bias",   dt, backend, stream);
+    norm3_weight_ = load_weight(weights, prefix + "norm3.weight", dt, backend, stream);
+
+    self_attn_.load(weights, prefix + "attn.",        cfg, backend, stream);
+    cross_attn_.load(weights, prefix + "cross_attn.", cfg, backend, stream);
+    ffn_.load(weights, prefix + "ffn.", cfg.hidden_dim, cfg.hidden_dim,
+              cfg.compute_dtype, backend, stream);
 }
 
-void DiTBlock::forward(const Tensor& x, const Tensor& c,
-                        int64_t cond_len, Tensor& out,
-                        BackendPtr backend, StreamHandle stream) const {
-    DType   dt = x.dtype();
-    int64_t B  = x.shape()[0];
-    int64_t S  = x.shape()[1];
+Tensor RDTBlock::forward(const Tensor& x,
+                          const Tensor& lang_cond, const Tensor& img_cond,
+                          int block_idx,
+                          BackendPtr backend, StreamHandle stream) const {
+    DType dt = x.dtype();
+    (void)dt;
 
-    // ── adaLN modulation ─────────────────────────────────────────────────
-    auto [scale1, shift1] = adaln_.forward(c, backend, stream);
+    // ── Self-attention branch ──────────────────────────────────────────────
+    Tensor normed1 = backend->alloc(x.shape(), x.dtype(), stream);
+    backend->rms_norm(x, norm1_weight_, normed1, norm_eps_, stream);
 
-    // ── Self-attention branch ─────────────────────────────────────────────
-    // Pre-norm.
-    Tensor normed1 = backend->alloc(x.shape(), dt, stream);
-    backend->layer_norm(x, norm1_weight_, norm1_bias_, normed1, norm_eps_, stream);
-
-    // Apply adaLN: normed = (1 + scale) * normed + shift
-    apply_adaln(normed1, scale1, shift1, backend, stream);
-
-    // Self-attention: condition tokens are fully visible to all tokens;
-    // action tokens attend to everything (no causal mask in the full sequence).
-    Tensor attn_out = backend->alloc(x.shape(), dt, stream);
-    attn_.forward(normed1, attn_out, /*is_causal=*/false, backend, stream);
-
-    // Residual.
-    Tensor x1 = backend->alloc(x.shape(), dt, stream);
+    Tensor attn_out = self_attn_.forward(normed1, backend, stream);
+    Tensor x1 = backend->alloc(x.shape(), x.dtype(), stream);
     backend->add(x, attn_out, x1, stream);
 
-    // ── FFN branch ────────────────────────────────────────────────────────
-    auto [scale2, shift2] = adaln_.forward(c, backend, stream);
+    // ── Cross-attention branch (alternating: even=lang, odd=img) ──────────
+    const Tensor& cond = (block_idx % 2 == 0) ? lang_cond : img_cond;
 
-    Tensor normed2 = backend->alloc(x1.shape(), dt, stream);
-    backend->layer_norm(x1, norm2_weight_, norm2_bias_, normed2, norm_eps_, stream);
-    apply_adaln(normed2, scale2, shift2, backend, stream);
+    Tensor normed2 = backend->alloc(x1.shape(), x1.dtype(), stream);
+    backend->rms_norm(x1, norm2_weight_, normed2, norm_eps_, stream);
 
-    Tensor ffn_out = backend->alloc(x1.shape(), dt, stream);
-    ffn_.forward(normed2, ffn_out, backend, stream);
+    Tensor cross_out = cross_attn_.forward(normed2, cond, backend, stream);
+    Tensor x2 = backend->alloc(x1.shape(), x1.dtype(), stream);
+    backend->add(x1, cross_out, x2, stream);
 
-    out = backend->alloc(x1.shape(), dt, stream);
-    backend->add(x1, ffn_out, out, stream);
+    // ── MLP branch ────────────────────────────────────────────────────────
+    Tensor normed3 = backend->alloc(x2.shape(), x2.dtype(), stream);
+    backend->rms_norm(x2, norm3_weight_, normed3, norm_eps_, stream);
+
+    Tensor ffn_out = ffn_.forward(normed3, backend, stream);
+    Tensor x3 = backend->alloc(x2.shape(), x2.dtype(), stream);
+    backend->add(x2, ffn_out, x3, stream);
+
+    return x3;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,43 +382,22 @@ void FinalLayer::load(const WeightMap& weights, const std::string& prefix,
                        const RDT1BConfig& cfg,
                        BackendPtr backend, StreamHandle stream) {
     hidden_dim_ = cfg.hidden_dim;
-    norm_eps_   = cfg.layer_norm_eps;
+    norm_eps_   = cfg.rms_norm_eps;
     DType dt    = cfg.compute_dtype;
 
-    adaln_.load(weights, prefix + "adaLN_modulation.", cfg, backend, stream);
-    norm_weight_   = load_weight(weights, prefix + "norm_final.weight", dt, backend, stream);
-    norm_bias_     = load_weight(weights, prefix + "norm_final.bias",   dt, backend, stream);
-    linear_weight_ = load_weight(weights, prefix + "linear.weight",     dt, backend, stream);
-    linear_bias_   = load_weight(weights, prefix + "linear.bias",       dt, backend, stream);
+    norm_final_weight_ = load_weight(weights, prefix + "norm_final.weight",
+                                     dt, backend, stream);
+    // ffn_final: hidden_dim → hidden_dim → action_dim
+    ffn_final_.load(weights, prefix + "ffn_final.",
+                    cfg.hidden_dim, cfg.action_dim,
+                    cfg.compute_dtype, backend, stream);
 }
 
-void FinalLayer::forward(const Tensor& x, const Tensor& c,
-                          int64_t action_horizon, Tensor& out,
-                          BackendPtr backend, StreamHandle stream) const {
-    DType   dt  = x.dtype();
-    int64_t B   = x.shape()[0];
-    int64_t S   = x.shape()[1];
-    int64_t A   = linear_bias_.shape()[0];  // action_dim
-
-    // Extract only the action subsequence (last action_horizon tokens).
-    int64_t cond_len = S - action_horizon;
-    Tensor action_x = x.slice(cond_len * hidden_dim_,
-                               S * hidden_dim_);  // approximate; TODO: proper dim-1 slice
-    action_x = x.view({B, S, hidden_dim_}).slice(cond_len, S);  // [B, T_action, D]
-
-    auto [scale, shift] = adaln_.forward(c, backend, stream);
-
-    Tensor normed = backend->alloc(action_x.shape(), dt, stream);
-    backend->layer_norm(action_x, norm_weight_, norm_bias_, normed, norm_eps_, stream);
-    apply_adaln(normed, scale, shift, backend, stream);
-
-    int64_t T = action_horizon;
-    Tensor normed_2d = normed.view({B * T, hidden_dim_});
-    Tensor out_2d    = backend->alloc(Shape({B * T, A}), dt, stream);
-    backend->gemm(normed_2d, linear_weight_, out_2d, 1.f, 0.f, false, true, stream);
-    backend->add(out_2d, linear_bias_.view({1, A}), out_2d, stream);
-
-    out = out_2d.view({B, T, A});
+Tensor FinalLayer::forward(const Tensor& x, BackendPtr backend,
+                            StreamHandle stream) const {
+    Tensor normed = backend->alloc(x.shape(), x.dtype(), stream);
+    backend->rms_norm(x, norm_final_weight_, normed, norm_eps_, stream);
+    return ffn_final_.forward(normed, backend, stream);
 }
 
 }  // namespace rdt1b

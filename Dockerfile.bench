@@ -33,6 +33,7 @@ WORKDIR /workspace/servoflow
 
 # Copy compiled ServoFlow binaries and benchmark scripts from the builder
 COPY --from=sf_builder /workspace/servoflow/build/benchmarks ./build/benchmarks
+COPY --from=sf_builder /workspace/servoflow/build/tests      ./build/tests
 COPY --from=sf_builder /workspace/servoflow/build/libservoflow.so /usr/local/lib/
 COPY benchmarks/ ./benchmarks/
 
