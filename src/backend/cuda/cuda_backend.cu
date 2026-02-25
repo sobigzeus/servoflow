@@ -182,8 +182,38 @@ void CUDABackend::check_device(const Tensor& t, const char* arg_name) const {
             + std::to_string(device_index_));
 }
 
-Tensor CUDABackend::alloc(Shape shape, DType dtype, StreamHandle /*stream*/) {
+Tensor CUDABackend::alloc(Shape shape, DType dtype, StreamHandle stream) {
     size_t bytes = shape.nbytes(dtype_size(dtype));
+    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
+    
+    cudaStreamCaptureStatus capture_status = cudaStreamCaptureStatusNone;
+    if (cuda_stream != nullptr) {
+        cudaError_t err = cudaStreamIsCapturing(cuda_stream, &capture_status);
+        if (err != cudaSuccess) {
+            // If checking capture status fails, assume no capture and clear error?
+            // Or just proceed.
+            cudaGetLastError(); // clear error
+            capture_status = cudaStreamCaptureStatusNone;
+        }
+    }
+
+    // If capturing, use cudaMallocAsync/cudaFreeAsync to be graph-friendly.
+    if (capture_status == cudaStreamCaptureStatusActive) {
+        void* ptr = nullptr;
+        SF_CUDA_CHECK(cudaMallocAsync(&ptr, bytes, cuda_stream));
+        
+        // Deleter must use the same stream (or compatible) for async free.
+        // Capturing the stream by value in the lambda.
+        auto deleter = [ptr, cuda_stream](void*) {
+            cudaFreeAsync(ptr, cuda_stream);
+        };
+        
+        Device dev(DeviceType::CUDA, device_index_);
+        auto storage = std::make_shared<Storage>(ptr, bytes, dev, deleter);
+        return Tensor(std::move(storage), std::move(shape), dtype);
+    }
+
+    // Otherwise use our manual memory pool (synchronous alloc).
     void*  ptr   = pool_.alloc(bytes);
     Device dev(DeviceType::CUDA, device_index_);
 

@@ -37,8 +37,8 @@ RUN cmake -B build -G Ninja \
         -DSF_BUILD_TESTS=${SF_BUILD_TESTS} \
         -DSF_BUILD_BENCHMARKS=${SF_BUILD_BENCHMARKS} \
         -DSF_BUILD_EXAMPLES=${SF_BUILD_EXAMPLES} \
-        -DSF_USE_FLASH_ATTN=OFF \
-    && cmake --build build -j$(nproc)
+        -DSF_USE_FLASH_ATTN=ON \
+    && cmake --build build -j4
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS runtime

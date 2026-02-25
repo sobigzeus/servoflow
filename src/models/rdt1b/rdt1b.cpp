@@ -9,9 +9,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <cstdlib>
-#include <cstring>
-#include <fstream>
 
 namespace fs = std::filesystem;
 
@@ -222,7 +219,12 @@ Tensor RDT1BModel::encode_condition(const VLAInput& input,
         Tensor mask_zeros     = backend->alloc(
             Shape({B, 1, cfg_.state_token_dim}), dt, stream);
         backend->fill(mask_zeros, 0.f, stream);
-        backend->cat({state_expanded, mask_zeros}, state_2d, /*dim=*/2, stream);
+        // Flatten to 2D [B, D] to use dim=1 cat, as backend only supports dim=0,1
+        Tensor state_flat = state_expanded.view({B, cfg_.state_token_dim});
+        Tensor mask_flat  = mask_zeros.view({B, cfg_.state_token_dim});
+        Tensor out_flat   = state_2d.view({B, 2 * cfg_.state_token_dim});
+        
+        backend->cat({state_flat, mask_flat}, out_flat, /*dim=*/1, stream);
     }
     Tensor state_traj = state_adaptor_.forward(state_2d, backend, stream);
     // [B, 1, D]
@@ -263,9 +265,21 @@ void RDT1BModel::denoise_step(const Tensor& x_t, float t,
     int64_t A   = cfg_.action_dim;
 
     // ── Unpack condition ──────────────────────────────────────────────────
-    Tensor state_traj = condition.slice(0, 1);       // [B, 1, D]
-    Tensor lang_cond  = condition.slice(1, 1 + L);   // [B, L, D]
-    Tensor img_cond   = condition.slice(1 + L, 1 + L + I);  // [B, I, D]
+    if (B != 1) {
+        throw std::runtime_error("RDT1BModel: currently only supports batch_size=1 for slicing");
+    }
+    // Helper to slice dim 1 for B=1: [1, S, D] -> [S, D] -> slice -> [1, new_S, D]
+    auto slice_dim1_b1 = [&](const Tensor& t, int64_t start, int64_t end) {
+        int64_t S = t.shape()[1];
+        int64_t D_dim = t.shape()[2];
+        Tensor t2 = t.view({S, D_dim});
+        Tensor s2 = t2.slice(start, end);
+        return s2.view({1, end - start, D_dim});
+    };
+
+    Tensor state_traj = slice_dim1_b1(condition, 0, 1);       // [B, 1, D]
+    Tensor lang_cond  = slice_dim1_b1(condition, 1, 1 + L);   // [B, L, D]
+    Tensor img_cond   = slice_dim1_b1(condition, 1 + L, 1 + L + I);  // [B, I, D]
 
     // ── Action tokens via state_adaptor ───────────────────────────────────
     // Concatenate noisy action with all-ones action mask (indicating valid dims).
@@ -277,7 +291,13 @@ void RDT1BModel::denoise_step(const Tensor& x_t, float t,
 
     // action_input: [B, T, 2*A]
     Tensor action_input = backend->alloc(Shape({B, T, 2 * A}), dt, stream);
-    backend->cat({x_t_dt, action_mask}, action_input, /*dim=*/2, stream);
+
+    // Reshape to 2D [B*T, A] for cat(dim=1) because backend only supports dim=0,1
+    Tensor x_2d    = x_t_dt.view({B * T, A});
+    Tensor mask_2d = action_mask.view({B * T, A});
+    Tensor out_2d  = action_input.view({B * T, 2 * A});
+    
+    backend->cat({x_2d, mask_2d}, out_2d, /*dim=*/1, stream);
 
     Tensor action_traj = state_adaptor_.forward(action_input, backend, stream);
     // [B, T, D]
@@ -320,7 +340,7 @@ void RDT1BModel::denoise_step(const Tensor& x_t, float t,
     backend->add(x_full, x_pos_embed_, x_full, stream);
 
     // lang_cond + lang_pos_embed[:L]
-    Tensor lang_pos = lang_cond_pos_embed_.slice(0, L);  // [1, L, D]
+    Tensor lang_pos = slice_dim1_b1(lang_cond_pos_embed_, 0, L);  // [1, L, D]
     Tensor lang_c = backend->alloc(lang_cond.shape(), dt, stream);
     backend->add(lang_cond, lang_pos, lang_c, stream);
 
@@ -339,7 +359,7 @@ void RDT1BModel::denoise_step(const Tensor& x_t, float t,
     Tensor final_out = final_layer_.forward(x_cur, backend, stream);
 
     // Take last T tokens: [B, T, action_dim]
-    velocity = final_out.slice(3, T + 3);  // [B, T, action_dim]
+    velocity = slice_dim1_b1(final_out, 3, T + 3);  // [B, T, action_dim]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -348,8 +368,11 @@ void RDT1BModel::denoise_step(const Tensor& x_t, float t,
 // Factory
 // ─────────────────────────────────────────────────────────────────────────────
 std::shared_ptr<RDT1BModel> load_rdt1b(const std::string& checkpoint_dir,
-                                        Device device) {
-    BackendPtr backend = get_backend(device);
+                                       BackendPtr backend,
+                                       Device device) {
+    if (!backend) {
+        backend = get_backend(device);
+    }
 
     auto cfg_path = fs::path(checkpoint_dir) / "config.json";
     RDT1BConfig cfg = fs::exists(cfg_path)

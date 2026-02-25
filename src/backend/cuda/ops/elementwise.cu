@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <stdexcept>
 #include <cmath>
+#include <string>
 
 namespace sf {
 namespace cuda_ops {
@@ -134,10 +135,16 @@ void cat_kernel(const std::vector<Tensor>& inputs, Tensor& out,
         // sequentially into the output row.
         int64_t rows = inputs[0].shape()[0];  // all inputs must have same rows
 
-        // Compute per-input column widths in bytes.
+        // Compute per-input "row" widths in bytes (bytes to copy per outer-dim index).
+        // For shape [d0, d1, ...], we copy d1*...*dn elements.
+        // This handles [B, N] (2D) and [B, N, D] (3D) correctly if we cat along dim=1
+        // ONLY IF the trailing dimensions match.
         std::vector<int64_t> col_bytes;
-        for (const auto& t : inputs)
-            col_bytes.push_back(static_cast<int64_t>(t.shape()[1]) * elem_size);
+        for (const auto& t : inputs) {
+             // stride(0) in bytes = numel / shape[0] * elem_size
+             int64_t row_elems = t.numel() / t.shape()[0];
+             col_bytes.push_back(row_elems * elem_size);
+        }
 
         int64_t out_row_bytes = 0;
         for (auto cb : col_bytes) out_row_bytes += cb;
@@ -154,7 +161,7 @@ void cat_kernel(const std::vector<Tensor>& inputs, Tensor& out,
             }
         }
     } else {
-        throw std::runtime_error("cat_kernel: only dim=0 and dim=1 are supported");
+        throw std::runtime_error("cat_kernel: only dim=0 and dim=1 are supported. Got dim=" + std::to_string(dim));
     }
 }
 

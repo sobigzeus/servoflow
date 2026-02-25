@@ -1,137 +1,122 @@
-#!/usr/bin/env bash
-# SPDX-License-Identifier: Apache-2.0
-# ServoFlow vs HuggingFace RDT-1B comparison benchmark.
-#
-# Usage:
-#   bash benchmarks/run_comparison.sh [--steps N] [--iters K] [--dtype fp16]
-#
-# Requires:
-#   - 'servoflow:latest' image  (docker-build.sh)
-#   - 'servoflow-bench:latest'  (docker build -f Dockerfile.bench ...)
-#   - GPU available (--gpus all)
-set -euo pipefail
+#!/bin/bash
+set -e
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
+# Default args
 STEPS=10
 ITERS=20
-WARMUP=5
-DTYPE="fp16"
-ACTION_DIM=14
-ACTION_HORIZON=64
-GPU="${GPU:-all}"
-HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
-MODEL_ID="robotics-diffusion-transformer/rdt-1b"
+MODEL_HOST_PATH="$(pwd)/tests/alignment/sf_checkpoint"
+SF_IMAGE="servoflow:bench"
 
-while [[ $# -gt 0 ]]; do
+# Parse args
+while [[ "$#" -gt 0 ]]; do
     case $1 in
-        --steps)   STEPS="$2";   shift 2 ;;
-        --iters)   ITERS="$2";   shift 2 ;;
-        --warmup)  WARMUP="$2";  shift 2 ;;
-        --dtype)   DTYPE="$2";   shift 2 ;;
-        *) echo "Unknown arg: $1"; exit 1 ;;
+        --steps) STEPS="$2"; shift ;;
+        --iters) ITERS="$2"; shift ;;
+        --model) MODEL_HOST_PATH="$2"; shift ;;
+        *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
+    shift
 done
 
-BENCH_IMAGE="servoflow-bench:latest"
-SF_IMAGE="servoflow:latest"
-HF_JSON="/tmp/sf_bench_hf_$$.json"
-SF_JSON="/tmp/sf_bench_sf_$$.json"
+echo "Running Comparison with Real Model Checkpoint"
+echo "  Model Path: $MODEL_HOST_PATH"
+echo "  Steps: $STEPS, Iters: $ITERS"
 
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║       ServoFlow vs HuggingFace RDT-1B Benchmark              ║"
-echo "╠══════════════════════════════════════════════════════════════╣"
-printf "║  denoising steps : %-42s ║\n" "$STEPS"
-printf "║  measure iters   : %-42s ║\n" "$ITERS"
-printf "║  dtype           : %-42s ║\n" "$DTYPE"
-printf "║  action dim×hor  : %-42s ║\n" "${ACTION_DIM}×${ACTION_HORIZON}"
-printf "║  model           : %-42s ║\n" "$MODEL_ID"
-echo "╚══════════════════════════════════════════════════════════════╝"
-echo ""
-
-# ── Build bench image if not present ─────────────────────────────────────────
-if ! docker image inspect "$BENCH_IMAGE" &>/dev/null; then
-    echo "► Building $BENCH_IMAGE …"
-    docker build \
-        -f "$(dirname "$0")/../Dockerfile.bench" \
-        -t "$BENCH_IMAGE" \
-        "$(dirname "$0")/.."
+# Check model path
+if [ ! -d "$MODEL_HOST_PATH" ]; then
+    echo "Error: Model directory not found at $MODEL_HOST_PATH"
+    exit 1
 fi
 
-# ── 1. HuggingFace baseline ───────────────────────────────────────────────────
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " [1/2]  HuggingFace Transformers — RDT-1B"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+# Check Base Image
+if [[ "$(docker images -q servoflow:latest 2> /dev/null)" == "" ]]; then
+    echo "Base image servoflow:latest not found. Building..."
+    bash docker-build.sh
+fi
 
-docker run --rm --gpus "device=${GPU}" \
-    -v "${HF_CACHE}:/root/.cache/huggingface" \
-    -v "${HF_JSON}:${HF_JSON}" \
-    "$BENCH_IMAGE" \
-    python benchmarks/bench_hf_rdt1b.py \
-        --steps          "$STEPS" \
-        --iters          "$ITERS" \
-        --warmup         "$WARMUP" \
-        --dtype          "$DTYPE" \
-        --action-dim     "$ACTION_DIM" \
-        --action-horizon "$ACTION_HORIZON" \
-        --model-id       "$MODEL_ID" \
-        --output-json    "$HF_JSON" \
-    || true   # non-fatal if model download fails
+# Check Bench Image
+if [[ "$(docker images -q $SF_IMAGE 2> /dev/null)" == "" ]]; then
+    echo "Image $SF_IMAGE not found. Building from Dockerfile.bench..."
+    docker build -t "$SF_IMAGE" -f Dockerfile.bench .
+fi
 
-echo ""
+# Prepare Temp Dir for Results
+TMP_DIR="/tmp/sf_bench_$$"
+mkdir -p "$TMP_DIR"
+chmod 777 "$TMP_DIR"
+HF_JSON="$TMP_DIR/hf_results.json"
+SF_JSON="$TMP_DIR/sf_results.json"
 
-# ── 2. ServoFlow pipeline benchmark ──────────────────────────────────────────
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " [2/2]  ServoFlow (framework overhead, stub RDT-1B dimensions)"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-docker run --rm --gpus "device=${GPU}" \
+# 1. Run Python (PyTorch Manual) Benchmark
+echo "---------------------------------------------------"
+echo "[1/2] Running PyTorch (Manual) Benchmark..."
+docker run --rm --gpus all \
+    -v "$(pwd):/workspace/servoflow" \
+    -v "$MODEL_HOST_PATH:/model" \
+    -v "$TMP_DIR:/tmp_bench" \
+    -w /workspace/servoflow \
     "$SF_IMAGE" \
-    /workspace/servoflow/build/benchmarks/bench_pipeline "$STEPS"
+    python3 benchmarks/bench_manual_rdt1b.py \
+        --sf-ckpt /model \
+        --steps "$STEPS" --iters "$ITERS" \
+        --output-json /tmp_bench/hf_results.json
 
-echo ""
+# 2. Run ServoFlow C++ Benchmark
+echo "---------------------------------------------------"
+echo "[2/2] Running ServoFlow C++ Benchmark..."
+# We compile the benchmark inside the container to ensure binary compatibility
+docker run --rm --gpus all \
+        -v "$(pwd):/workspace/servoflow" \
+        -v "$MODEL_HOST_PATH:/model" \
+        -v "$TMP_DIR:/tmp_bench" \
+        -w /workspace/servoflow \
+        "$SF_IMAGE" \
+        bash -c "
+            rm -rf build && mkdir -p build && cd build && \
+            cmake .. -DSF_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release -DSF_ENABLE_CUDA=ON > /dev/null && \
+            make -j\$(nproc) bench_pipeline > /dev/null && \
+            export LD_LIBRARY_PATH=\$(pwd):\$LD_LIBRARY_PATH && \
+            ./benchmarks/bench_pipeline /model $STEPS $ITERS | tee /tmp_bench/sf_raw.txt
+        "
 
-# ── 3. Summary table ──────────────────────────────────────────────────────────
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║                    COMPARISON SUMMARY                        ║"
-echo "╠════════════════════════╦══════════════╦══════════════════════╣"
-echo "║ Metric                 ║  HuggingFace ║  ServoFlow (stub)    ║"
-echo "╠════════════════════════╬══════════════╬══════════════════════╣"
+# Extract Mean Latency from C++ Output
+# Expected output: "Mean latency: 12.34 ms"
+SF_MEAN=$(grep "Mean latency:" "$TMP_DIR/sf_raw.txt" | awk '{print $3}')
+if [ -z "$SF_MEAN" ]; then SF_MEAN=0; fi
 
-if [[ -f "$HF_JSON" ]]; then
-    # Parse key metrics from HF JSON using python
-    python3 - "$HF_JSON" "$STEPS" <<'PYEOF'
-import json, sys
+# 3. Generate Summary
+echo "---------------------------------------------------"
+python3 -c "
+import json
+import sys
 
-with open(sys.argv[1]) as f:
-    r = json.load(f)
-steps = int(sys.argv[2])
+steps = $STEPS
+sf_mean = float('$SF_MEAN')
 
-def get_ms(r, keys):
-    for k in keys:
-        if k in r:
-            return f"{r[k]['mean_ms']:.1f} ms"
-    return "  N/A"
+try:
+    with open('$HF_JSON') as f:
+        hf = json.load(f)
+        hf_mean = hf['denoise_loop']['mean_ms']
+except:
+    hf_mean = 0
 
-full  = get_ms(r, ["full_pipeline",      "dummy_single_forward"])
-loop  = get_ms(r, ["denoise_loop",       "dummy_denoise_loop"])
-step  = f"{r.get('per_step_ms', 0):.2f} ms" if 'per_step_ms' in r else "N/A"
-hz    = f"{1000/(r.get('per_step_ms',1)*steps):.1f} Hz" if 'per_step_ms' in r else "N/A"
-mem   = f"{r.get('model_memory_mb',0):.0f} MB" if 'model_memory_mb' in r else "N/A"
-vmem  = f"{r.get('peak_memory_mb',0):.0f} MB"  if 'peak_memory_mb'  in r else "N/A"
+hf_per_step = hf_mean / steps if steps > 0 else 0
+sf_per_step = sf_mean / steps if steps > 0 else 0
 
-print(f"║ Single forward pass    ║ {full:>12} ║ (see ServoFlow output) ║")
-print(f"║ {steps}-step denoise loop  ║ {loop:>12} ║ (see ServoFlow output) ║")
-print(f"║ Per-step latency       ║ {step:>12} ║ (see ServoFlow output) ║")
-print(f"║ Achievable control Hz  ║ {hz:>12} ║ (see ServoFlow output) ║")
-print(f"║ Model VRAM             ║ {mem:>12} ║ ~framework only        ║")
-print(f"║ Peak VRAM              ║ {vmem:>12} ║ (see ServoFlow output) ║")
-PYEOF
-    rm -f "$HF_JSON"
-else
-    echo "║ (HuggingFace results not available)                          ║"
-fi
+hf_hz = 1000.0 / hf_mean if hf_mean > 0 else 0
+sf_hz = 1000.0 / sf_mean if sf_mean > 0 else 0
 
-echo "╠════════════════════════╩══════════════╩══════════════════════╣"
-echo "║ NOTE: ServoFlow stub uses same tensor dimensions as RDT-1B.  ║"
-echo "║ Real model comparison pending weight loader completion.       ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
+speedup_loop = hf_mean / sf_mean if sf_mean > 0 else 0
+speedup_step = hf_per_step / sf_per_step if sf_per_step > 0 else 0
+speedup_hz = sf_hz / hf_hz if hf_hz > 0 else 0
+
+print(f'\nComparison Results ({steps} steps, Real RDT-1B Model):')
+print(f'Metric                  | PyTorch (Manual) | ServoFlow (C++) | Speedup')
+print(f'------------------------|------------------|-----------------|--------')
+print(f'Loop Latency (ms)       | {hf_mean:16.2f} | {sf_mean:15.2f} | {speedup_loop:.2f}x')
+print(f'Per-step Latency (ms)   | {hf_per_step:16.2f} | {sf_per_step:15.2f} | {speedup_step:.2f}x')
+print(f'Control Freq (Hz)       | {hf_hz:16.2f} | {sf_hz:15.2f} | {speedup_hz:.2f}x')
+"
+
+# Cleanup
+rm -rf "$TMP_DIR"

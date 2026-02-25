@@ -133,7 +133,10 @@ def main():
 
     # ── Load model ────────────────────────────────────────────────────────────
     print("\n[1/4] Loading model …")
-    torch.cuda.reset_peak_memory_stats(DEVICE)
+    try:
+        torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
     t_load_start = time.perf_counter()
 
     try:

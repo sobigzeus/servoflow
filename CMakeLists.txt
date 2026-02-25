@@ -34,7 +34,7 @@ if(SF_ENABLE_CUDA)
     set(CMAKE_CUDA_ARCHITECTURES ${SF_CUDA_ARCHS})
 
     # Compiler flags for device code.
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math -Xcompiler -Wall")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --use_fast_math -Xcompiler -Wall --expt-relaxed-constexpr")
     set(CMAKE_CUDA_FLAGS_RELEASE "-O3 -DNDEBUG")
 endif()
 
@@ -66,24 +66,6 @@ if(SF_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 endif()
 
-# FlashAttention v2 — must be installed separately (CUDA kernel dependency).
-# We link against the pre-built library if available.
-if(SF_USE_FLASH_ATTN AND SF_ENABLE_CUDA)
-    find_library(FLASH_ATTN_LIB flash_attn
-        HINTS ${FLASH_ATTN_ROOT}/lib ENV FLASH_ATTN_ROOT
-        DOC "FlashAttention shared library"
-    )
-    if(FLASH_ATTN_LIB)
-        message(STATUS "FlashAttention found: ${FLASH_ATTN_LIB}")
-        set(SF_HAVE_FLASH_ATTN ON)
-    else()
-        message(WARNING
-            "FlashAttention not found. Falling back to manual attention kernel. "
-            "Set FLASH_ATTN_ROOT or install flash-attn to enable.")
-        set(SF_HAVE_FLASH_ATTN OFF)
-    endif()
-endif()
-
 # ── Core library sources ──────────────────────────────────────────────────────
 set(SF_CORE_SOURCES
     src/backend/backend.cpp
@@ -100,6 +82,20 @@ set(SF_CUDA_SOURCES
     src/backend/cuda/ops/elementwise.cu
     src/models/rdt1b/dit_block.cu
 )
+
+# FlashAttention v2 — integrated from source.
+if(SF_USE_FLASH_ATTN AND SF_ENABLE_CUDA)
+    message(STATUS "Integrating FlashAttention v2 from source")
+    
+    # Add FlashAttention sources
+    file(GLOB FLASH_ATTN_SOURCES "src/backend/cuda/flash_attn/*.cu")
+    list(APPEND SF_CUDA_SOURCES 
+        src/backend/cuda/flash_attn_adapter.cu
+        ${FLASH_ATTN_SOURCES}
+    )
+    
+    set(SF_HAVE_FLASH_ATTN ON)
+endif()
 
 # ── servoflow library target ──────────────────────────────────────────────────
 if(SF_ENABLE_CUDA)
@@ -132,13 +128,19 @@ if(SF_ENABLE_CUDA)
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_RESOLVE_DEVICE_SYMBOLS ON
     )
-endif()
-
-if(SF_HAVE_FLASH_ATTN)
-    target_link_libraries(servoflow PUBLIC ${FLASH_ATTN_LIB})
-    target_compile_definitions(servoflow PUBLIC SF_USE_FLASH_ATTN)
-    target_include_directories(servoflow PUBLIC
-        $<BUILD_INTERFACE:${FLASH_ATTN_ROOT}/include>)
+    
+    if(SF_HAVE_FLASH_ATTN)
+        set(CUTLASS_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/flash-attention/csrc/cutlass/include")
+        if(NOT EXISTS ${CUTLASS_INCLUDE_DIR})
+            message(FATAL_ERROR "Cutlass include directory not found at ${CUTLASS_INCLUDE_DIR}. Please run 'git submodule update --init --recursive'")
+        endif()
+        
+        target_include_directories(servoflow PRIVATE
+            ${CUTLASS_INCLUDE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/backend/cuda
+        )
+        target_compile_definitions(servoflow PUBLIC SF_USE_FLASH_ATTN)
+    endif()
 endif()
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
