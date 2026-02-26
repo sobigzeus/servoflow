@@ -37,7 +37,7 @@ fi
 # Check Bench Image
 if [[ "$(docker images -q $SF_IMAGE 2> /dev/null)" == "" ]]; then
     echo "Image $SF_IMAGE not found. Building from Dockerfile.bench..."
-    docker build -t "$SF_IMAGE" -f Dockerfile.bench .
+    docker build --network=host --memory=28g --cpuset-cpus=0-6 -t "$SF_IMAGE" -f Dockerfile.bench .
 fi
 
 # Prepare Temp Dir for Results
@@ -50,13 +50,14 @@ SF_JSON="$TMP_DIR/sf_results.json"
 # 1. Run Python (PyTorch Manual) Benchmark
 echo "---------------------------------------------------"
 echo "[1/2] Running PyTorch (Manual) Benchmark..."
-docker run --rm --gpus all \
+docker run --rm --gpus all --memory=28g --cpus=7 \
     -v "$(pwd):/workspace/servoflow" \
     -v "$MODEL_HOST_PATH:/model" \
     -v "$TMP_DIR:/tmp_bench" \
     -w /workspace/servoflow \
     "$SF_IMAGE" \
     python3 benchmarks/bench_manual_rdt1b.py \
+        --device cuda:0 \
         --sf-ckpt /model \
         --steps "$STEPS" --iters "$ITERS" \
         --output-json /tmp_bench/hf_results.json
@@ -65,7 +66,7 @@ docker run --rm --gpus all \
 echo "---------------------------------------------------"
 echo "[2/2] Running ServoFlow C++ Benchmark..."
 # We compile the benchmark inside the container to ensure binary compatibility
-docker run --rm --gpus all \
+docker run --rm --gpus all --memory=28g --cpus=7 \
         -v "$(pwd):/workspace/servoflow" \
         -v "$MODEL_HOST_PATH:/model" \
         -v "$TMP_DIR:/tmp_bench" \
@@ -74,7 +75,7 @@ docker run --rm --gpus all \
         bash -c "
             rm -rf build && mkdir -p build && cd build && \
             cmake .. -DSF_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release -DSF_ENABLE_CUDA=ON > /dev/null && \
-            make -j\$(nproc) bench_pipeline > /dev/null && \
+            make -j6 bench_pipeline > /dev/null && \
             export LD_LIBRARY_PATH=\$(pwd):\$LD_LIBRARY_PATH && \
             ./benchmarks/bench_pipeline /model $STEPS $ITERS | tee /tmp_bench/sf_raw.txt
         "

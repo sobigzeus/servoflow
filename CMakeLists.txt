@@ -88,7 +88,16 @@ if(SF_USE_FLASH_ATTN AND SF_ENABLE_CUDA)
     message(STATUS "Integrating FlashAttention v2 from source")
     
     # Add FlashAttention sources
-    file(GLOB FLASH_ATTN_SOURCES "src/backend/cuda/flash_attn/*.cu")
+    # file(GLOB FLASH_ATTN_SOURCES "src/backend/cuda/flash_attn/*.cu")
+    # Optimize build time by only compiling needed kernels
+    set(FLASH_ATTN_SOURCES 
+        src/backend/cuda/flash_attn/flash_fwd_hdim32_fp16_causal_sm80.cu
+        src/backend/cuda/flash_attn/flash_fwd_hdim32_fp16_sm80.cu
+        src/backend/cuda/flash_attn/flash_fwd_hdim64_fp16_causal_sm80.cu
+        src/backend/cuda/flash_attn/flash_fwd_hdim64_fp16_sm80.cu
+        src/backend/cuda/flash_attn/flash_fwd_hdim128_fp16_causal_sm80.cu
+        src/backend/cuda/flash_attn/flash_fwd_hdim128_fp16_sm80.cu
+    )
     list(APPEND SF_CUDA_SOURCES 
         src/backend/cuda/flash_attn_adapter.cu
         ${FLASH_ATTN_SOURCES}

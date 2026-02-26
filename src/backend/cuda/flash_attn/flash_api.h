@@ -10,5 +10,6 @@ namespace flash_attn {
                  int window_size_left, int window_size_right,
                  float softcap,
                  bool is_bf16,
-                 cudaStream_t stream);
+                 cudaStream_t stream,
+                 bool is_BSHD = false);
 }

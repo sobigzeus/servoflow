@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "attention.h"
 
+#include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cstdio>
 #include <cuda_bf16.h>
 #include <stdexcept>
 #include <cmath>
@@ -17,22 +19,22 @@ namespace sf {
 namespace cuda_ops {
 
 #ifdef SF_USE_FLASH_ATTN
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FlashAttention v2 path (preferred for Ampere+ GPUs).
-// FlashAttention expects inputs in [batch, seq, heads, head_dim] layout,
-// so we may need a transpose. To avoid extra overhead we keep our tensors
-// in [B, H, S, D] throughout and call the _varlen or standard API.
+// FlashAttention expects inputs in [batch, seq, heads, head_dim] layout (BSHD).
+// Our layout is [B, H, S, D].
+// We use stride support in FlashAttention to handle [B, H, S, D] directly.
 // ─────────────────────────────────────────────────────────────────────────────
 static void flash_attn_dispatch(const Tensor& Q, const Tensor& K, const Tensor& V,
                                 Tensor& out, const Tensor* /*mask*/,
                                 float scale, bool is_causal,
                                 cudaStream_t stream) {
-    // FlashAttention expects [B, S, H, D]. Reshape metadata (no copy).
-    // Our layout is [B, H, S, D]; we pass strides explicitly.
     int64_t B  = Q.shape()[0];
     int64_t H  = Q.shape()[1];
     int64_t Sq = Q.shape()[2];
     int64_t D  = Q.shape()[3];
+    int64_t H_k = K.shape()[1];
     int64_t Sk = K.shape()[2];
 
     if (scale == 0.f) scale = 1.f / sqrtf(static_cast<float>(D));
@@ -42,19 +44,44 @@ static void flash_attn_dispatch(const Tensor& Q, const Tensor& K, const Tensor& 
     if (!is_fp16 && !is_bf16)
         throw std::runtime_error("FlashAttention requires fp16 or bf16 input");
 
-    // Delegate to flash_attn C++ API.
-    // This is a simplified call; production code should handle seqlens_q/k,
-    // dropout, etc.
-    flash_attn::mha_fwd(
-        Q.raw_data_ptr(), K.raw_data_ptr(), V.raw_data_ptr(),
-        out.raw_data_ptr(),
-        /*softmax_lse=*/nullptr,
-        B, Sq, Sk, H, H, D,
-        scale, is_causal,
-        /*window_size_left=*/-1, /*window_size_right=*/is_causal ? 0 : -1,
-        /*softcap=*/0.f,
-        /*is_bf16=*/is_bf16,
-        stream);
+    size_t lse_bytes = static_cast<size_t>(B) * H * Sq * sizeof(float);
+    
+    // Allocate softmax_lse buffer.
+    // FlashAttention requires this buffer for backward pass, but also uses it
+    // internally in forward pass.
+    // Add padding to be safe against tiled access.
+    // For D=64, kBlockN=256. If Sk=128, it reads 256, so we need extra padding.
+    // 128KB padding is sufficient.
+    size_t padding = 128 * 1024;
+    
+    void *softmax_lse = nullptr;
+    cudaError_t malloc_err = cudaMalloc(&softmax_lse, lse_bytes + padding);
+    if (malloc_err != cudaSuccess) {
+        throw std::runtime_error("cudaMalloc failed");
+    }
+    cudaMemsetAsync(softmax_lse, 0, lse_bytes + padding, stream);
+    
+    try {
+        // ServoFlow layout is [B, H, S, D].
+        // FlashAttention supports this via strides.
+        // We pass is_BSHD=false to indicate [B, H, S, D] layout.
+        flash_attn::mha_fwd(
+            Q.raw_data_ptr(), K.raw_data_ptr(), V.raw_data_ptr(),
+            out.raw_data_ptr(),
+            softmax_lse,
+            B, Sq, Sk, H, H_k, D,
+            scale, is_causal,
+            /*window_size_left=*/-1, /*window_size_right=*/is_causal ? 0 : -1,
+            /*softcap=*/0.f,
+            /*is_bf16=*/is_bf16,
+            stream,
+            /*is_BSHD=*/false);
+    } catch (const std::exception& e) {
+        cudaFree(softmax_lse);
+        throw;
+    }
+    
+    cudaFree(softmax_lse);
 }
 #endif  // SF_USE_FLASH_ATTN
 
@@ -138,40 +165,40 @@ static void fallback_attention(const Tensor& Q, const Tensor& K, const Tensor& V
         case DType::Float32:
             naive_attention_kernel<float><<<grid, block, 0, stream>>>(
                 Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),
-                out.data_ptr<float>(), Sq, Sk, H, D, scale, is_causal);
+                out.data_ptr<float>(),
+                Sq, Sk, H, D, scale, is_causal);
             break;
         case DType::Float16:
-            naive_attention_kernel<__half><<<grid, block, 0, stream>>>(
-                Q.data_ptr<__half>(), K.data_ptr<__half>(), V.data_ptr<__half>(),
-                out.data_ptr<__half>(), Sq, Sk, H, D, scale, is_causal);
+            naive_attention_kernel<half><<<grid, block, 0, stream>>>(
+                Q.data_ptr<half>(), K.data_ptr<half>(), V.data_ptr<half>(),
+                out.data_ptr<half>(),
+                Sq, Sk, H, D, scale, is_causal);
             break;
         case DType::BFloat16:
             naive_attention_kernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
-                Q.data_ptr<__nv_bfloat16>(), K.data_ptr<__nv_bfloat16>(),
-                V.data_ptr<__nv_bfloat16>(),
-                out.data_ptr<__nv_bfloat16>(), Sq, Sk, H, D, scale, is_causal);
+                Q.data_ptr<__nv_bfloat16>(), K.data_ptr<__nv_bfloat16>(), V.data_ptr<__nv_bfloat16>(),
+                out.data_ptr<__nv_bfloat16>(),
+                Sq, Sk, H, D, scale, is_causal);
             break;
         default:
-            throw std::runtime_error("attention: unsupported dtype");
+            throw std::runtime_error("Unsupported dtype for fallback attention");
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public dispatch
-// ─────────────────────────────────────────────────────────────────────────────
 void flash_attention(const Tensor& Q, const Tensor& K, const Tensor& V,
-                     Tensor& out, const Tensor* mask,
+                     Tensor& out,
+                     const Tensor* mask,
                      float scale, bool is_causal,
                      cudaStream_t stream) {
 #ifdef SF_USE_FLASH_ATTN
+    // Use FlashAttention if possible (fp16/bf16).
     if (Q.dtype() == DType::Float16 || Q.dtype() == DType::BFloat16) {
         flash_attn_dispatch(Q, K, V, out, mask, scale, is_causal, stream);
         return;
     }
 #endif
-    // fp32 or when FlashAttention is unavailable.
     fallback_attention(Q, K, V, out, scale, is_causal, stream);
 }
 
-}  // namespace cuda_ops
-}  // namespace sf
+} // namespace cuda_ops
+} // namespace sf

@@ -3,3 +3,12 @@ __pycache__
 sf_checkpoint/
 artifacts
 third_party
+build/
+build_host/
+build_local/
+build_local_debug/
+build_local_release/
+build_no_flash/
+*.json
+run_*.sh
+benchmarks/pytorch_docker_results.json

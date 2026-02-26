@@ -43,6 +43,13 @@ template<typename Kernel_traits, __VA_ARGS__> \
 __global__ void kernelName(KERNEL_PARAM_MODIFIER const Flash_fwd_params params)
 
 DEFINE_FLASH_FORWARD_KERNEL(flash_fwd_kernel, bool Is_dropout, bool Is_causal, bool Is_local, bool Has_alibi, bool Is_even_MN, bool Is_even_K, bool Is_softcap, bool Return_softmax) {
+    /*
+    if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+        printf("KERNEL START: B=%d H=%d Sq=%d D=%d\n", params.b, params.h, params.seqlen_q, params.d);
+        printf("KERNEL PTRS: Q=%p K=%p V=%p O=%p LSE=%p\n", params.q_ptr, params.k_ptr, params.v_ptr, params.o_ptr, params.softmax_lse_ptr);
+        printf("KERNEL STRIDES: Q_row=%ld Q_head=%ld Q_batch=%ld\n", (long)params.q_row_stride, (long)params.q_head_stride, (long)params.q_batch_stride);
+    }
+    */
     #if defined(ARCH_SUPPORTS_FLASH)
         static_assert(!(Is_causal && Is_local)); // Enforce constraints
         FLASH_NAMESPACE::compute_attn<Kernel_traits, Is_dropout, Is_causal, Is_local, Has_alibi, Is_even_MN, Is_even_K, Is_softcap, Return_softmax>(params);
@@ -185,7 +192,7 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream)
 template<typename T, bool Is_causal>
 void run_mha_fwd_hdim32(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 32;
-    DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+    DROPOUT_SWITCH(params.p_dropout > 0.f, Is_dropout, [&] {
         run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 128, 4, false, false, T>, Is_dropout, Is_causal>(params, stream);
     });
 }
@@ -193,7 +200,7 @@ void run_mha_fwd_hdim32(Flash_fwd_params &params, cudaStream_t stream) {
 template<typename T, bool Is_causal>
 void run_mha_fwd_hdim64(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 64;
-    DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+    DROPOUT_SWITCH(params.p_dropout > 0.f, Is_dropout, [&] {
         if constexpr(!Is_dropout) {
             // Using 8 warps is 18% slower for seqlen=2k, 2 warps is 5% slower
             // Using block size (64 x 256) is 27% slower for seqlen=2k
@@ -215,7 +222,7 @@ void run_mha_fwd_hdim96(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 96;
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x = cc_major == 8 && cc_minor > 0;
-    DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+    DROPOUT_SWITCH(params.p_dropout > 0.f, Is_dropout, [&] {
         // For sm86 or sm89, 64 x 64 is the fastest for causal (because it's square),
         if (is_sm8x) {
             if constexpr(!Is_causal) {
@@ -239,7 +246,7 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 128;
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x = cc_major == 8 && cc_minor > 0;
-    DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+    DROPOUT_SWITCH(params.p_dropout > 0.f, Is_dropout, [&] {
         if constexpr(!Is_dropout) {
             // For sm86 or sm89, 64 x 64 is the fastest for causal (because it's square),
             // and 128 x 32 (48 KB smem) is the fastest for non-causal since we get 2 CTAs per SM.
@@ -272,7 +279,7 @@ void run_mha_fwd_hdim128(Flash_fwd_params &params, cudaStream_t stream) {
 template<typename T, bool Is_causal>
 void run_mha_fwd_hdim192(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static int Headdim = 192;
-    DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+    DROPOUT_SWITCH(params.p_dropout > 0.f, Is_dropout, [&] {
         if constexpr(!Is_dropout) {
             run_flash_fwd<Flash_fwd_kernel_traits<Headdim, 128, 64, 8, false, false, T>, Is_dropout, Is_causal>(params, stream);
         } else {
@@ -300,7 +307,7 @@ void run_mha_fwd_hdim256(Flash_fwd_params &params, cudaStream_t stream) {
       C10_CUDA_CHECK(status_);
     }
     // printf("max_smem_per_sm = %d, max_smem_per_block = %d\n", max_smem_per_sm, max_smem_per_block);
-    DROPOUT_SWITCH(params.p_dropout < 1.f, Is_dropout, [&] {
+    DROPOUT_SWITCH(params.p_dropout > 0.f, Is_dropout, [&] {
         // For A100, we want to run with 128 x 64 (128KB smem).
         // For H100 we want to run with 64 x 64 (96KB smem) since then we can get 2 CTAs per SM.
         if (max_smem_per_block >= 2 * Headdim * (128 + 2 * 64) && max_smem_per_sm < 4 * Headdim * (64 + 2 * 64)) {

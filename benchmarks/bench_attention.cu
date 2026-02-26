@@ -32,8 +32,9 @@ struct Config {
     int64_t seq     = 512;
     int64_t head_dim = 64;
     DType   dtype   = DType::Float16;
-    int     warmup  = 10;
-    int     iters   = 100;
+    int     warmup  = 5;
+    int     iters   = 20;
+    bool    causal  = false;
 };
 
 static void run_bench(const Config& cfg) {
@@ -54,8 +55,9 @@ static void run_bench(const Config& cfg) {
     cudaStream_t cs = reinterpret_cast<cudaStream_t>(stream);
 
     // Warm-up.
-    for (int i = 0; i < cfg.warmup; ++i)
-        backend->attention(Q, K, V, out, nullptr, 0.f, /*causal=*/false, stream);
+    for (int i = 0; i < cfg.warmup; ++i) {
+        backend->attention(Q, K, V, out, nullptr, 0.f, cfg.causal, stream);
+    }
     CUDA_CHECK(cudaStreamSynchronize(cs));
 
     // Timed iterations.
@@ -65,7 +67,7 @@ static void run_bench(const Config& cfg) {
 
     CUDA_CHECK(cudaEventRecord(ev_start, cs));
     for (int i = 0; i < cfg.iters; ++i)
-        backend->attention(Q, K, V, out, nullptr, 0.f, false, stream);
+        backend->attention(Q, K, V, out, nullptr, 0.f, cfg.causal, stream);
     CUDA_CHECK(cudaEventRecord(ev_end, cs));
     CUDA_CHECK(cudaEventSynchronize(ev_end));
 
@@ -76,9 +78,10 @@ static void run_bench(const Config& cfg) {
     double flops = attn_flops(cfg.batch, cfg.heads, cfg.seq, cfg.head_dim);
     double tflops = flops / (mean_ms * 1e-3) / 1e12;
 
-    std::printf("  [B=%lld H=%lld S=%lld D=%lld dtype=%s]  %.3f ms  %.2f TFLOP/s\n",
+    std::printf("  [B=%lld H=%lld S=%lld D=%lld causal=%d dtype=%s]  %.3f ms  %.2f TFLOP/s\n",
                 (long long)cfg.batch, (long long)cfg.heads,
                 (long long)cfg.seq,   (long long)cfg.head_dim,
+                (int)cfg.causal,
                 std::string(dtype_name(cfg.dtype)).c_str(),
                 mean_ms, tflops);
 
@@ -88,26 +91,35 @@ static void run_bench(const Config& cfg) {
 }
 
 int main() {
-    std::printf("=== ServoFlow Attention Benchmark ===\n");
-
+    std::fprintf(stderr, "=== ServoFlow Attention Benchmark ===\n");
     std::vector<Config> configs = {
-        // RDT-1B-like config: seq 512, 16 heads, head_dim 64
-        {1, 16, 512,  64,  DType::Float16, 10, 100},
-        {1, 16, 1024, 64,  DType::Float16, 10, 100},
-        // Causal (action decoder self-attention).
-        {1, 16, 64,   64,  DType::Float16, 10, 200},
-        // BFloat16 variant.
-        {1, 16, 512,  64,  DType::BFloat16, 10, 100},
+        // Correctness/sanity check (small)
+        {1, 2, 128, 64, DType::Float16, 2, 2, false},
+        {1, 2, 128, 64, DType::Float16, 2, 2, true},
+        
+        // Standard perf cases
+        {1, 12, 1024, 64, DType::Float16, 5, 20, false},
+        {1, 12, 1024, 64, DType::Float16, 5, 20, true},
+        
+        // Larger seq len
+        {1, 12, 2048, 64, DType::Float16, 5, 20, false},
+        
+        // Larger batch
+        {8, 12, 512, 64, DType::Float16, 5, 20, false},
+        
+        // Different head dim (if supported by FlashAttention - standard are 32, 64, 128)
+        {1, 8, 512, 32, DType::Float16, 5, 20, false},
+        {1, 8, 512, 128, DType::Float16, 5, 20, false},
     };
 
-    for (auto& cfg : configs) {
+    for (const auto& cfg : configs) {
         try {
             run_bench(cfg);
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "  [SKIPPED] %s\n", e.what());
+            std::printf("FAILED config [B=%lld H=%lld S=%lld D=%lld]: %s\n", 
+                (long long)cfg.batch, (long long)cfg.heads, (long long)cfg.seq, (long long)cfg.head_dim, e.what());
         }
     }
 
-    std::printf("=====================================\n");
     return 0;
 }
