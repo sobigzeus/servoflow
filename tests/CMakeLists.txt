@@ -17,6 +17,7 @@ sf_add_test(test_dtype)
 sf_add_test(test_shape)
 sf_add_test(test_tensor)
 sf_add_test(test_sampler)
+sf_add_test(test_quantization)
 
 # Integration tests require CUDA.
 if(SF_ENABLE_CUDA)

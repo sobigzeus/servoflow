@@ -80,6 +80,7 @@ set(SF_CUDA_SOURCES
     src/backend/cuda/cuda_backend.cu
     src/backend/cuda/ops/attention.cu
     src/backend/cuda/ops/elementwise.cu
+    src/backend/cuda/ops/quantization.cu
     src/models/rdt1b/dit_block.cu
 )
 

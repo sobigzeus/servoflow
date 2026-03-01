@@ -198,6 +198,13 @@ public:
     virtual void cast(const Tensor& src, Tensor& dst,
                       StreamHandle stream = nullptr) = 0;
 
+    // Dequantize INT8 tensor to FP16 using scale.
+    // input: [N, K] (row-major) or [K, N] (col-major) depending on layout.
+    // scale: [N] (per-channel) or [1] (per-tensor).
+    // output: same shape as input, FP16.
+    virtual void dequantize(const Tensor& input, const Tensor& scale, Tensor& output,
+                            StreamHandle stream = nullptr) = 0;
+
     // Concatenate tensors along dim (all inputs on same device).
     virtual void cat(const std::vector<Tensor>& inputs, Tensor& out,
                      int64_t dim = 0, StreamHandle stream = nullptr) = 0;

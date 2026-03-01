@@ -3,6 +3,7 @@
 #include "backend/cuda/ops/attention.h"
 #include "backend/cuda/ops/elementwise.cuh"
 #include "backend/cuda/ops/norm.cuh"
+#include "backend/cuda/ops/quantization.cuh"
 
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
@@ -557,6 +558,13 @@ void CUDABackend::embedding(const Tensor& weight, const Tensor& indices,
 // ── Cast ──────────────────────────────────────────────────────────────────────
 void CUDABackend::cast(const Tensor& src, Tensor& dst, StreamHandle stream) {
     cuda_ops::cast_kernel(src, dst, to_stream(stream));
+}
+
+// ── Dequantize ────────────────────────────────────────────────────────────────
+void CUDABackend::dequantize(const Tensor& input, const Tensor& scale,
+                             Tensor& output, StreamHandle stream) {
+    check_device(input, "input"); check_device(scale, "scale"); check_device(output, "output");
+    cuda_ops::dequantize_int8(input, scale, output, to_stream(stream));
 }
 
 // ── Cat ───────────────────────────────────────────────────────────────────────

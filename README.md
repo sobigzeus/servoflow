@@ -176,8 +176,9 @@ servoflow/
 - [x] Benchmark vs diffusers + TensorRT pipeline (PyTorch baseline)
 
 **Phase 2**
+- [x] Backend support for INT8 dequantization (Weight-Only)
 - [ ] Model distillation (fewer denoising steps)
-- [ ] INT8 / INT4 quantisation
+- [ ] INT8 / INT4 model loading & integration
 - [ ] ROCm backend
 - [ ] Jetson / edge hardware optimisation
 - [ ] TensorRT backend

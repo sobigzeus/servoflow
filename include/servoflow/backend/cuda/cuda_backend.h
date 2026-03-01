@@ -137,6 +137,8 @@ public:
     void embedding(const Tensor& weight, const Tensor& indices,
                    Tensor& out, StreamHandle stream) override;
     void cast(const Tensor& src, Tensor& dst, StreamHandle stream) override;
+    void dequantize(const Tensor& input, const Tensor& scale, Tensor& output,
+                    StreamHandle stream) override;
     void cat(const std::vector<Tensor>& inputs, Tensor& out,
              int64_t dim, StreamHandle stream) override;
 
