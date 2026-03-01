@@ -412,8 +412,13 @@ Tensor RDT1BModel::forward_raw(
     int64_t freq,
     StreamHandle stream) const
 {
+    // Use default stream if none provided, to avoid lifetime issues with returned tensors.
+    StreamHandle s = stream;
+    bool own_stream = false;
+    /*
     StreamHandle s = stream ? stream : backend_->create_stream();
     bool own_stream = !stream;
+    */
 
     DType dt = cfg_.compute_dtype;
     int64_t D = cfg_.hidden_dim;
