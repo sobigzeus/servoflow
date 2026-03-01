@@ -478,39 +478,24 @@ void CUDABackend::attention(const Tensor& Q, const Tensor& K, const Tensor& V,
     int64_t Sq = Q.shape()[2];
     
     // For FlashAttention (fp16/bf16), we need a workspace for softmax_lse.
-    // If not using FA (e.g. fp32), workspace is ignored but we allocate it anyway for simplicity.
     size_t lse_bytes = static_cast<size_t>(B) * H * Sq * sizeof(float);
     size_t padding = 128 * 1024; 
     size_t required = lse_bytes + padding;
 
-    // We use a simple strategy: lock, check if current workspace is big enough.
-    // If not, reallocate (synchronously). 
-    // This is safe for Graph Capture IF the reallocation happens *before* capture begins
-    // or if the size is stable during capture.
-    // Since RDT-1B has fixed sequence lengths during inference, this should stabilize
-    // after the first warmup run.
-    
+    // Use cudaMallocAsync for graph-safe workspace allocation.
+    // The driver handles memory reuse, so we don't need a manual persistent buffer.
     void* ws_ptr = nullptr;
-    size_t ws_size = 0;
-    
-    {
-        std::lock_guard<std::mutex> lk(attention_mu_);
-        if (attention_workspace_size_ < required) {
-            // Reallocate
-            SF_CUDA_CHECK(cudaSetDevice(device_index_));
-            if (attention_workspace_) {
-                SF_CUDA_CHECK(cudaFree(attention_workspace_));
-            }
-            SF_CUDA_CHECK(cudaMalloc(&attention_workspace_, required));
-            attention_workspace_size_ = required;
-        }
-        ws_ptr = attention_workspace_;
-        ws_size = attention_workspace_size_;
-    }
+    SF_CUDA_CHECK(cudaMallocAsync(&ws_ptr, required, to_stream(stream)));
 
-    cuda_ops::flash_attention(Q, K, V, out, mask, scale, is_causal,
-                              ws_ptr, ws_size,
-                              to_stream(stream));
+    try {
+        cuda_ops::flash_attention(Q, K, V, out, mask, scale, is_causal,
+                                  ws_ptr, required,
+                                  to_stream(stream));
+    } catch (...) {
+        cudaFreeAsync(ws_ptr, to_stream(stream));
+        throw;
+    }
+    SF_CUDA_CHECK(cudaFreeAsync(ws_ptr, to_stream(stream)));
 }
 
 // ── Normalization ─────────────────────────────────────────────────────────────
